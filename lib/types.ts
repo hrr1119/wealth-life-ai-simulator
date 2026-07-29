@@ -1,4 +1,5 @@
-export type ModeId = "quick" | "standard";
+export type ModeId = "quick" | "standard" | "deep";
+export type TimeScale = "year" | "quarter";
 export type ThemeId = "emerald" | "midnight" | "paper" | "terracotta";
 export type YearPhase = "opening" | "planning" | "reveal" | "consequence" | "chapter";
 export type ActionCategory =
@@ -26,6 +27,10 @@ export interface ModeDefinition {
   id: ModeId;
   name: string;
   turns: number;
+  years: number;
+  timeScale: TimeScale;
+  actionBudget: number;
+  startingAge: number;
   opportunityTokens: number;
   description: string;
   duration: string;
@@ -237,7 +242,73 @@ export type PlannedActionKind =
   | "asset"
   | "life"
   | "opportunity"
-  | "social";
+  | "social"
+  | "deep";
+
+export type DeepActionId =
+  | "tax_review"
+  | "protect_family"
+  | "raise_pension"
+  | "buy_home"
+  | "refinance_home"
+  | "build_family"
+  | "care_parents"
+  | "start_business"
+  | "hire_team"
+  | "operate_business"
+  | "estate_plan";
+
+export interface DeepLifeState {
+  tax: {
+    withholdingRate: number;
+    yearTaxPaid: number;
+    deductions: number;
+    lastAnnualReconciliation: number;
+  };
+  insurance: {
+    healthCoverage: number;
+    lifeCoverage: number;
+    disabilityCoverage: number;
+    annualPremium: number;
+  };
+  pension: {
+    balance: number;
+    contributionRate: number;
+    employerMatch: number;
+    retirementAge: number;
+  };
+  housing: {
+    tenure: "rent" | "owner";
+    propertyValue: number;
+    mortgageBalance: number;
+    mortgageRate: number;
+    termQuarters: number;
+  };
+  family: {
+    partnered: boolean;
+    sharedCash: number;
+    children: Array<{ id: string; age: number; educationFund: number }>;
+    parentCareLevel: number;
+    familyTrust: number;
+  };
+  business: {
+    active: boolean;
+    name: string;
+    cash: number;
+    employees: number;
+    inventory: number;
+    monthlyRevenue: number;
+    monthlyCost: number;
+    equity: number;
+    governance: number;
+  };
+  legacy: {
+    willReady: boolean;
+    estatePlan: number;
+    heirs: number;
+    generationScore: number;
+  };
+}
 
 export interface PlannedAction {
   id: string;
@@ -321,10 +392,14 @@ export interface QuestState {
 }
 
 export interface GameState {
-  version: 2;
+  version: 3;
   phase: "playing" | "review";
   yearPhase: YearPhase;
   mode: ModeId;
+  timeScale: TimeScale;
+  actionBudget: number;
+  age: number;
+  deep: DeepLifeState | null;
   theme: ThemeId;
   roleId: string;
   turn: number;

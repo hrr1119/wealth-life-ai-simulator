@@ -14,6 +14,8 @@ import type {
   AnnualBriefing,
   ChapterSummary,
   ConsequenceScene,
+  DeepActionId,
+  DeepLifeState,
   DelayedConsequence,
   EventDefinition,
   GameState,
@@ -30,6 +32,116 @@ import type {
 } from "./types.ts";
 
 const TALENT_KEYS = ["表达", "分析", "技术", "销售", "管理", "创意", "手艺", "研究"];
+
+export const DEEP_ACTIONS: Array<{
+  id: DeepActionId;
+  category: string;
+  name: string;
+  description: string;
+  cashCost: number;
+  points: number;
+  requires?: (state: GameState) => boolean;
+  requiresLabel?: string;
+}> = [
+  {
+    id: "tax_review",
+    category: "税务",
+    name: "整理税务与可扣除凭证",
+    description: "核对预缴、家庭与经营扣除，减少年末税务波动。",
+    cashCost: 1_200,
+    points: 1,
+  },
+  {
+    id: "protect_family",
+    category: "保障",
+    name: "升级家庭风险保障",
+    description: "增加医疗、寿险与失能覆盖，以持续保费换取灾难风险的承受力。",
+    cashCost: 2_000,
+    points: 1,
+  },
+  {
+    id: "raise_pension",
+    category: "养老",
+    name: "提高养老金缴费",
+    description: "提高个人缴费比例，并尽量拿满雇主匹配。",
+    cashCost: 0,
+    points: 1,
+  },
+  {
+    id: "buy_home",
+    category: "住房",
+    name: "购置长期居所",
+    description: "支付首付并建立长期房贷；利率、房价与家庭计划会共同影响结果。",
+    cashCost: 80_000,
+    points: 3,
+    requires: (state) => state.deep?.housing.tenure === "rent",
+    requiresLabel: "仅租房状态可用",
+  },
+  {
+    id: "refinance_home",
+    category: "住房",
+    name: "评估房贷再融资",
+    description: "支付手续成本，争取把存量房贷利率向当前市场利率靠拢。",
+    cashCost: 4_000,
+    points: 2,
+    requires: (state) => state.deep?.housing.tenure === "owner",
+    requiresLabel: "购房后可用",
+  },
+  {
+    id: "build_family",
+    category: "家庭",
+    name: "建立共同财务",
+    description: "与伴侣明确账户、照护、住房和长期目标；可能迎来下一代。",
+    cashCost: 12_000,
+    points: 3,
+  },
+  {
+    id: "care_parents",
+    category: "照护",
+    name: "安排父母长期照护",
+    description: "用现金和时间建立医疗、陪伴与紧急联络方案。",
+    cashCost: 6_000,
+    points: 2,
+  },
+  {
+    id: "start_business",
+    category: "企业",
+    name: "创办一家小型企业",
+    description: "从小额资本、清晰股权和可验证订单开始，而不是把创业当作一次加薪。",
+    cashCost: 30_000,
+    points: 4,
+    requires: (state) => !state.deep?.business.active,
+    requiresLabel: "未创业时可用",
+  },
+  {
+    id: "hire_team",
+    category: "企业",
+    name: "招聘并建立职责",
+    description: "增加交付能力与固定成本，同时提高企业对治理的要求。",
+    cashCost: 10_000,
+    points: 3,
+    requires: (state) => Boolean(state.deep?.business.active),
+    requiresLabel: "创业后可用",
+  },
+  {
+    id: "operate_business",
+    category: "企业",
+    name: "经营、补库存与拓客",
+    description: "在库存、交付、客户和现金之间做一次完整季度经营。",
+    cashCost: 5_000,
+    points: 3,
+    requires: (state) => Boolean(state.deep?.business.active),
+    requiresLabel: "创业后可用",
+  },
+  {
+    id: "estate_plan",
+    category: "传承",
+    name: "建立遗嘱与资产传承方案",
+    description: "明确受益人、企业股权、照护责任和紧急授权。",
+    cashCost: 8_000,
+    points: 2,
+  },
+];
 
 export const LIFE_ACTIONS = [
   {
@@ -157,6 +269,73 @@ export function seededRandom(seed: number, step = 0): number {
   return ((value ^ (value >>> 15)) >>> 0) / 4_294_967_296;
 }
 
+export function getLifeYear(state: Pick<GameState, "turn" | "timeScale">): number {
+  return state.timeScale === "quarter" ? Math.ceil(state.turn / 4) : state.turn;
+}
+
+export function getQuarter(state: Pick<GameState, "turn" | "timeScale">): number | null {
+  return state.timeScale === "quarter" ? ((state.turn - 1) % 4) + 1 : null;
+}
+
+export function getPeriodLabel(state: Pick<GameState, "turn" | "timeScale">): string {
+  const quarter = getQuarter(state);
+  return quarter ? `第 ${getLifeYear(state)} 年 · Q${quarter}` : `第 ${state.turn} 年`;
+}
+
+function createDeepLifeState(role: (typeof ROLES)[number]): DeepLifeState {
+  return {
+    tax: {
+      withholdingRate: 0.08,
+      yearTaxPaid: 0,
+      deductions: 0,
+      lastAnnualReconciliation: 0,
+    },
+    insurance: {
+      healthCoverage: 120_000,
+      lifeCoverage: 0,
+      disabilityCoverage: 0,
+      annualPremium: 2_400,
+    },
+    pension: {
+      balance: Math.round(role.monthlyIncome * 2.5),
+      contributionRate: 0.05,
+      employerMatch: 0.03,
+      retirementAge: 65,
+    },
+    housing: {
+      tenure: "rent",
+      propertyValue: 0,
+      mortgageBalance: 0,
+      mortgageRate: 0,
+      termQuarters: 0,
+    },
+    family: {
+      partnered: false,
+      sharedCash: 0,
+      children: [],
+      parentCareLevel: 0,
+      familyTrust: 55,
+    },
+    business: {
+      active: false,
+      name: "未命名事业",
+      cash: 0,
+      employees: 0,
+      inventory: 0,
+      monthlyRevenue: 0,
+      monthlyCost: 0,
+      equity: 1,
+      governance: 0,
+    },
+    legacy: {
+      willReady: false,
+      estatePlan: 0,
+      heirs: 0,
+      generationScore: 0,
+    },
+  };
+}
+
 function copyState(state: GameState): GameState {
   return {
     ...state,
@@ -206,6 +385,20 @@ function copyState(state: GameState): GameState {
     history: [...state.history],
     aiPlayers: state.aiPlayers.map((player) => ({ ...player, memories: [...player.memories] })),
     careerHistory: [...state.careerHistory],
+    deep: state.deep
+      ? {
+          tax: { ...state.deep.tax },
+          insurance: { ...state.deep.insurance },
+          pension: { ...state.deep.pension },
+          housing: { ...state.deep.housing },
+          family: {
+            ...state.deep.family,
+            children: state.deep.family.children.map((child) => ({ ...child })),
+          },
+          business: { ...state.deep.business },
+          legacy: { ...state.deep.legacy },
+        }
+      : null,
     pendingEvent: state.pendingEvent
       ? { ...state.pendingEvent, event: state.pendingEvent.event }
       : null,
@@ -267,6 +460,10 @@ function getChapterName(turn: number): string {
   return CHAPTER_NAMES[Math.min(CHAPTER_NAMES.length - 1, Math.floor((turn - 1) / 3))];
 }
 
+function getStateChapterName(state: Pick<GameState, "turn" | "timeScale">): string {
+  return getChapterName(getLifeYear(state));
+}
+
 function createCorePlan(state: Pick<GameState, "turn" | "currentCareerId">): PlannedAction {
   const career = CAREERS.find((item) => item.id === state.currentCareerId);
   return {
@@ -313,7 +510,10 @@ function createDefaultQuests(): QuestState[] {
 }
 
 function createAnnualBriefing(state: GameState): AnnualBriefing {
-  const chapter = getChapterName(state.turn);
+  const chapter = getStateChapterName(state);
+  const lifeYear = getLifeYear(state);
+  const quarter = getQuarter(state);
+  const period = getPeriodLabel(state);
   const cycleCopy = {
     繁荣: "资本与招聘同时升温，但高估值正在放大判断代价。",
     平稳: "城市仍在增长，只是每个机会都更依赖真实能力与交付。",
@@ -326,9 +526,9 @@ function createAnnualBriefing(state: GameState): AnnualBriefing {
   );
   const newestRoute = state.unlockedRoutes?.at(-1);
   return {
-    year: state.turn,
+    year: lifeYear,
     chapter,
-    headline: `${state.world.city} · 第 ${state.turn} 年：${state.world.cycle}里的新秩序`,
+    headline: `${state.world.city} · ${period}：${state.world.cycle}里的新秩序`,
     cityNews: `${cycleCopy}${state.world.platformTrend}正在重排本地机会，当前利率为 ${(state.world.interestRate * 100).toFixed(1)}%。`,
     message: {
       sender: player?.name ?? "城市观察员",
@@ -344,7 +544,9 @@ function createAnnualBriefing(state: GameState): AnnualBriefing {
       ? `你过去的选择已解锁「${newestRoute}」，它会改变后续事件与合作入口。`
       : `棋盘上的「${BOARD_STAGES[Math.min(BOARD_STAGES.length - 1, state.turn - 1)].label}」正在成为今年的主场景。`,
     riskNote: due
-      ? `延迟后果临近：${due.title}将在${due.dueTurn === state.turn ? "今年" : "下一年"}兑现。`
+      ? `延迟后果临近：${due.title}将在${due.dueTurn === state.turn ? "本期" : "下一期"}兑现。`
+      : quarter === 4
+        ? "年末季度：税务汇算、养老金增长、子女成长与长期资产会同步更新。"
       : state.world.cycle === "衰退" || state.world.cycle === "放缓"
         ? "风险区域：主业稳定性与现金流缓冲会共同影响下一次职业事件。"
         : "风险区域：繁荣期的过度扩张会在未来一到三年留下固定成本。",
@@ -373,7 +575,14 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
   if (!legacy?.world || !legacy.roleId) return null;
   const upgraded = {
     ...legacy,
-    version: 2,
+    version: 3,
+    timeScale: legacy.timeScale ?? "year",
+    actionBudget: legacy.actionBudget ?? 8,
+    age: legacy.age ?? 24 + Math.max(0, getLifeYear({
+      turn: legacy.turn,
+      timeScale: legacy.timeScale ?? "year",
+    }) - 1),
+    deep: legacy.deep ?? null,
     yearPhase: legacy.yearPhase ?? "opening",
     plan: [...(legacy.plan ?? [])],
     reveals: [...(legacy.reveals ?? [])],
@@ -398,15 +607,19 @@ export function createGame(config: NewGameConfig): GameState {
   for (const skill of role.starterSkills) skills[skill] = 1;
 
   const game: GameState = {
-    version: 2,
+    version: 3,
     phase: "playing",
     yearPhase: "opening",
     mode: mode.id,
+    timeScale: mode.timeScale,
+    actionBudget: mode.actionBudget,
+    age: mode.startingAge,
+    deep: mode.id === "deep" ? createDeepLifeState(role) : null,
     theme: config.theme,
     roleId: role.id,
     turn: 1,
     maxTurns: mode.turns,
-    actionPoints: 8,
+    actionPoints: mode.actionBudget,
     opportunityTokens: mode.opportunityTokens,
     world: createWorld(seed),
     cash: role.cash,
@@ -452,7 +665,7 @@ export function createGame(config: NewGameConfig): GameState {
         turn: 1,
         type: "system",
         title: "人生实验开始",
-        description: `${role.name}在${createWorld(seed).city}开始了新的财务人生。`,
+        description: `${role.name}在${createWorld(seed).city}开始了新的财务人生。${mode.id === "deep" ? "这是一段按季度推进的 60 年长期人生。" : ""}`,
         tags: ["开局"],
         timestamp: Date.now(),
       },
@@ -466,7 +679,21 @@ export function createGame(config: NewGameConfig): GameState {
 }
 
 export function getNetWorth(state: GameState): number {
-  return state.cash + state.assets.reduce((sum, asset) => sum + asset.value, 0) - state.debt;
+  const marketAssets = state.assets.reduce((sum, asset) => sum + asset.value, 0);
+  const deepAssets = state.deep
+    ? state.deep.pension.balance +
+      Math.max(0, state.deep.housing.propertyValue - state.deep.housing.mortgageBalance) +
+      state.deep.family.sharedCash +
+      Math.max(
+        0,
+        state.deep.business.cash +
+          state.deep.business.inventory +
+          state.deep.business.monthlyRevenue * 3 -
+          state.deep.business.monthlyCost * 3,
+      ) *
+        state.deep.business.equity
+    : 0;
+  return state.cash + marketAssets + deepAssets - state.debt;
 }
 
 export function getEmergencyMonths(state: GameState): number {
@@ -979,8 +1206,8 @@ function schedulePlanItem(state: GameState, item: Omit<PlannedAction, "id">): Ac
   if (state.plan.some((planned) => planned.kind === item.kind && planned.targetId === item.targetId && planned.targetPlayerId === item.targetPlayerId)) {
     return { state, success: false, message: "这项安排已经在年度计划中。" };
   }
-  if (getPlannedTime(state) + item.timeCost > 8) {
-    return { state, success: false, message: "年度时间预算不足，请先移除一项安排。" };
+  if (getPlannedTime(state) + item.timeCost > state.actionBudget) {
+    return { state, success: false, message: `${state.timeScale === "quarter" ? "季度" : "年度"}时间预算不足，请先移除一项安排。` };
   }
   if (getPlannedCash(state) + item.cashCost > state.cash) {
     return { state, success: false, message: "计划中的现金支出已经超过当前可用现金。" };
@@ -991,7 +1218,7 @@ function schedulePlanItem(state: GameState, item: Omit<PlannedAction, "id">): Ac
     id: `plan-${next.turn}-${next.plan.length + 1}-${item.kind}-${item.targetId}`,
   });
   next.savedAt = Date.now();
-  return { state: next, success: true, message: `已把「${item.label}」放入第 ${state.turn} 年计划。` };
+  return { state: next, success: true, message: `已把「${item.label}」放入${getPeriodLabel(state)}计划。` };
 }
 
 export function beginYearPlanning(state: GameState): ActionResult {
@@ -999,7 +1226,7 @@ export function beginYearPlanning(state: GameState): ActionResult {
     return { state, success: false, message: "先回应年度开场事件。" };
   }
   if (state.yearPhase !== "opening") {
-    return { state, success: false, message: "今年已经进入计划或结算流程。" };
+    return { state, success: false, message: `本${state.timeScale === "quarter" ? "季度" : "年度"}已经进入计划或结算流程。` };
   }
   const next = copyState(state);
   next.yearPhase = "planning";
@@ -1008,12 +1235,12 @@ export function beginYearPlanning(state: GameState): ActionResult {
   next.revealIndex = 0;
   next.consequenceScene = null;
   next.lastCard = {
-    eyebrow: `${getChapterName(next.turn)} · 年度计划`,
+    eyebrow: `${getStateChapterName(next)} · ${next.timeScale === "quarter" ? "季度" : "年度"}计划`,
     title: "先把时间放到真正重要的承诺上",
-    narrative: "主业已经占用 4 点基础时间。剩余时间可以投入学习、关系、家庭、投资或一次自由机会；所有安排会在确认后一起揭晓。",
+    narrative: `主业已经占用 4 点基础时间。剩余 ${next.actionBudget - 4} 点可以投入学习、关系、家庭、投资${next.deep ? "、企业、税务、养老" : ""}或一次自由机会；所有安排会在确认后一起揭晓。`,
     tags: ["同时规划", "时间预算", "机会成本"],
   };
-  return { state: next, success: true, message: "年度计划桌已展开。" };
+  return { state: next, success: true, message: `${next.timeScale === "quarter" ? "季度" : "年度"}计划桌已展开。` };
 }
 
 export function removePlannedAction(state: GameState, planId: string): ActionResult {
@@ -1076,6 +1303,25 @@ export function scheduleLifeAction(state: GameState, actionId: string): ActionRe
   if (!action) return { state, success: false, message: "未找到这项行动。" };
   return schedulePlanItem(state, {
     kind: "life",
+    targetId: action.id,
+    label: action.name,
+    category: action.category,
+    timeCost: action.points,
+    cashCost: action.cashCost,
+  });
+}
+
+export function scheduleDeepAction(state: GameState, actionId: DeepActionId): ActionResult {
+  if (!state.deep) {
+    return { state, success: false, message: "长期人生系统只在深度人生中开放。" };
+  }
+  const action = DEEP_ACTIONS.find((item) => item.id === actionId);
+  if (!action) return { state, success: false, message: "未找到这项长期行动。" };
+  if (action.requires && !action.requires(state)) {
+    return { state, success: false, message: action.requiresLabel ?? "当前条件不满足。" };
+  }
+  return schedulePlanItem(state, {
+    kind: "deep",
     targetId: action.id,
     label: action.name,
     category: action.category,
@@ -1225,6 +1471,145 @@ function resolveSocialPlan(state: GameState, item: PlannedAction): ActionResult 
   return { state: next, success: true, message: outcome };
 }
 
+function resolveDeepPlan(state: GameState, item: PlannedAction): ActionResult {
+  const action = DEEP_ACTIONS.find((candidate) => candidate.id === item.targetId);
+  if (!state.deep || !action) {
+    return { state, success: false, message: "长期人生行动缺少可执行状态。" };
+  }
+  if (action.requires && !action.requires(state)) {
+    return { state, success: false, message: action.requiresLabel ?? "执行时条件已经变化。" };
+  }
+  let next = copyState(state);
+  const deep = next.deep!;
+  next.cash -= action.cashCost;
+  next.actionPoints = Math.max(0, next.actionPoints - action.points);
+  let outcome = "";
+  switch (action.id) {
+    case "tax_review": {
+      deep.tax.deductions += 12_000;
+      deep.tax.withholdingRate = clamp(deep.tax.withholdingRate - 0.004, 0.04, 0.22);
+      outcome = "你完成了凭证与预缴核对。可扣除额度增加，年末汇算的不确定性下降。";
+      break;
+    }
+    case "protect_family": {
+      deep.insurance.healthCoverage += 180_000;
+      deep.insurance.lifeCoverage += Math.max(150_000, next.monthlyIncome * 24);
+      deep.insurance.disabilityCoverage += 100_000;
+      deep.insurance.annualPremium += 1_800;
+      outcome = "医疗、寿险与失能覆盖同步提高；保障不会创造收益，但能阻断灾难性现金流。";
+      break;
+    }
+    case "raise_pension": {
+      deep.pension.contributionRate = clamp(deep.pension.contributionRate + 0.02, 0.05, 0.18);
+      deep.pension.employerMatch = clamp(deep.pension.employerMatch + 0.005, 0.03, 0.06);
+      outcome = `养老金缴费比例提高到 ${Math.round(deep.pension.contributionRate * 100)}%，长期复利会在每个季度结算。`;
+      break;
+    }
+    case "buy_home": {
+      const propertyValue = 400_000 * (0.8 + next.world.housingHeat * 0.4);
+      deep.housing.tenure = "owner";
+      deep.housing.propertyValue = Math.round(propertyValue);
+      deep.housing.mortgageBalance = Math.max(0, Math.round(propertyValue - action.cashCost));
+      deep.housing.mortgageRate = next.world.interestRate + 0.012;
+      deep.housing.termQuarters = 120;
+      next.fixedExpense = Math.max(1_200, next.fixedExpense - 900);
+      outcome = `你支付首付并持有价值 ${formatMoney(propertyValue)} 的居所，房贷将在未来 120 个季度持续摊还。`;
+      break;
+    }
+    case "refinance_home": {
+      const before = deep.housing.mortgageRate;
+      deep.housing.mortgageRate = Math.min(before, next.world.interestRate + 0.008);
+      outcome = `房贷利率从 ${(before * 100).toFixed(1)}% 调整为 ${(deep.housing.mortgageRate * 100).toFixed(1)}%，节省会在余下期限逐季体现。`;
+      break;
+    }
+    case "build_family": {
+      if (!deep.family.partnered) {
+        deep.family.partnered = true;
+        deep.family.sharedCash += 18_000;
+        deep.family.familyTrust = clamp(deep.family.familyTrust + 12, 0, 100);
+        next.relationship = clamp(next.relationship + 8, 0, 100);
+        outcome = "你们建立了共同账户、支出边界与长期目标；共同现金开始参与家庭选择。";
+      } else if (deep.family.children.length < 3) {
+        deep.family.children.push({
+          id: `child-${next.turn}-${deep.family.children.length + 1}`,
+          age: 0,
+          educationFund: 0,
+        });
+        deep.legacy.heirs = deep.family.children.length;
+        next.fixedExpense += 900;
+        outcome = "家庭迎来新的成员。照护支出、教育金与时间压力会长期进入季度结算。";
+      } else {
+        deep.family.familyTrust = clamp(deep.family.familyTrust + 8, 0, 100);
+        deep.family.sharedCash += 6_000;
+        outcome = "家庭重新校准了共同目标，信任与共同现金缓冲得到加强。";
+      }
+      break;
+    }
+    case "care_parents": {
+      deep.family.parentCareLevel = clamp(deep.family.parentCareLevel + 1, 0, 5);
+      deep.family.familyTrust = clamp(deep.family.familyTrust + 6, 0, 100);
+      next.stress = clamp(next.stress - 3, 0, 100);
+      outcome = "医疗资料、紧急联系人和照护预算被写成可执行方案，长期家庭风险下降。";
+      break;
+    }
+    case "start_business": {
+      deep.business.active = true;
+      deep.business.name = `${next.world.city}生活实验室`;
+      deep.business.cash = action.cashCost;
+      deep.business.employees = 1;
+      deep.business.inventory = 8_000;
+      deep.business.monthlyRevenue = 12_000;
+      deep.business.monthlyCost = 9_000;
+      deep.business.governance = 35;
+      outcome = `${deep.business.name}开始运营。企业现金、库存、员工、收入、成本和治理将与个人账户分开结算。`;
+      break;
+    }
+    case "hire_team": {
+      deep.business.cash += action.cashCost;
+      deep.business.employees += 1;
+      deep.business.monthlyRevenue += 7_500;
+      deep.business.monthlyCost += 5_200;
+      deep.business.governance = clamp(deep.business.governance + 8, 0, 100);
+      outcome = `团队增至 ${deep.business.employees} 人，收入能力和固定成本同时上升。`;
+      break;
+    }
+    case "operate_business": {
+      deep.business.cash += action.cashCost;
+      deep.business.inventory += 6_000;
+      deep.business.monthlyRevenue = Math.round(deep.business.monthlyRevenue * 1.08 + 2_000);
+      deep.business.governance = clamp(deep.business.governance + 4, 0, 100);
+      outcome = "库存、客户与交付流程完成一次经营迭代，下一季度的收入上限提高。";
+      break;
+    }
+    case "estate_plan": {
+      deep.legacy.willReady = true;
+      deep.legacy.estatePlan = clamp(deep.legacy.estatePlan + 25, 0, 100);
+      deep.legacy.generationScore = clamp(deep.legacy.generationScore + 8, 0, 100);
+      outcome = "遗嘱、受益人、企业股权与紧急授权形成书面方案，代际传承不再依赖口头承诺。";
+      break;
+    }
+  }
+  next = addKnowledge(next, ["现金流", "复利", "风险承受力"]);
+  next = addMemory(next, [`长期系统:${action.id}`, action.name]);
+  next = finalizeActionCard(
+    next,
+    null,
+    `深度人生 · ${action.category}`,
+    action.name,
+    action.description,
+    ["深度人生", action.category, getPeriodLabel(next)],
+    outcome,
+  );
+  next = addHistory(next, {
+    type: "action",
+    title: action.name,
+    description: outcome,
+    cashDelta: -action.cashCost,
+    tags: ["深度人生", action.category],
+  });
+  return { state: next, success: true, message: outcome };
+}
+
 function statChanges(before: GameState, after: GameState): YearReveal["statChanges"] {
   return [
     ["现金", after.cash - before.cash],
@@ -1337,7 +1722,7 @@ function createConsequenceScene(state: GameState): ConsequenceScene {
   const delayed = state.delayedConsequences
     .filter((item) => item.status === "pending" && item.dueTurn > state.turn)
     .slice(-2)
-    .map((item) => `第 ${item.dueTurn} 年：${item.title}`);
+    .map((item) => `${getPeriodLabel({ turn: item.dueTurn, timeScale: state.timeScale })}：${item.title}`);
   return {
     speaker: player?.name ?? "城市观察员",
     role: player?.archetype ?? "旁观者",
@@ -1361,6 +1746,7 @@ function executePlannedAction(state: GameState, item: PlannedAction): ActionResu
   if (item.kind === "life") return takeLifeAction(state, item.targetId);
   if (item.kind === "opportunity" && item.payload) return resolveOpportunity(state, item.payload);
   if (item.kind === "social") return resolveSocialPlan(state, item);
+  if (item.kind === "deep") return resolveDeepPlan(state, item);
   return { state, success: false, message: "这项计划缺少可执行的规则映射。" };
 }
 
@@ -1377,7 +1763,7 @@ export function commitYearPlan(state: GameState): ActionResult {
   }));
   let working = copyState(state);
   working.plan = [];
-  working.actionPoints = 8;
+  working.actionPoints = working.actionBudget;
   const reveals: YearReveal[] = [];
   plan.forEach((item, index) => {
     const before = copyState(working);
@@ -1404,7 +1790,7 @@ export function commitYearPlan(state: GameState): ActionResult {
   return {
     state: working,
     success: true,
-    message: `第 ${working.turn} 年计划已锁定，正在依次揭晓 ${reveals.length} 项结果。`,
+    message: `${getPeriodLabel(working)}计划已锁定，正在依次揭晓 ${reveals.length} 项结果。`,
   };
 }
 
@@ -1413,7 +1799,7 @@ function enterConsequencePhase(state: GameState): GameState {
   next.yearPhase = "consequence";
   next.consequenceScene = createConsequenceScene(next);
   next.lastCard = {
-    eyebrow: `${getChapterName(next.turn)} · 年度后果`,
+    eyebrow: `${getStateChapterName(next)} · ${next.timeScale === "quarter" ? "季度" : "年度"}后果`,
     title: next.consequenceScene.title,
     narrative: next.consequenceScene.narrative,
     outcome: next.consequenceScene.reaction,
@@ -1458,13 +1844,13 @@ export function continueAfterChapter(state: GameState): ActionResult {
   next.chapterSummary = null;
   next.annualBriefing = createAnnualBriefing(next);
   next.lastCard = {
-    eyebrow: `${getChapterName(next.turn)} · 年度开场`,
+    eyebrow: `${getStateChapterName(next)} · ${next.timeScale === "quarter" ? "季度" : "年度"}开场`,
     title: next.annualBriefing.headline,
     narrative: next.annualBriefing.cityNews,
     outcome: next.annualBriefing.riskNote,
     tags: [next.annualBriefing.chapter, next.world.cycle, "城市新闻"],
   };
-  return { state: next, success: true, message: `进入第 ${next.turn} 年。` };
+  return { state: next, success: true, message: `进入${getPeriodLabel(next)}。` };
 }
 
 function createCareerShockChainEvent(turn: number): EventDefinition | null {
@@ -1592,19 +1978,23 @@ function createCareerShockChainEvent(turn: number): EventDefinition | null {
 }
 
 function eventEligible(state: GameState, event: (typeof EVENTS)[number]): boolean {
-  if ((event.minTurn ?? 1) > state.turn) return false;
-  if (event.maxTurn && event.maxTurn < state.turn) return false;
+  const lifeYear = getLifeYear(state);
+  if ((event.minTurn ?? 1) > lifeYear) return false;
+  if (event.maxTurn && event.maxTurn < lifeYear) return false;
   if (event.requiredTags?.some((tag) => !state.memory[tag])) return false;
   if (event.blockedTags?.some((tag) => state.memory[tag])) return false;
   return true;
 }
 
 function chooseEvent(state: GameState): [GameState["pendingEvent"], GameState] {
+  const lifeYear = getLifeYear(state);
+  const chainWindow = state.timeScale === "year" || getQuarter(state) === 1;
   const chainEvent =
-    state.turn >= 3 &&
-    state.turn <= 5 &&
-    (state.turn === 3 || (state.chainProgress.careerShock ?? 0) === state.turn - 3)
-      ? createCareerShockChainEvent(state.turn)
+    chainWindow &&
+    lifeYear >= 3 &&
+    lifeYear <= 5 &&
+    (lifeYear === 3 || (state.chainProgress.careerShock ?? 0) === lifeYear - 3)
+      ? createCareerShockChainEvent(lifeYear)
       : null;
   if (chainEvent) return [{ event: chainEvent, source: "chain" }, state];
   const candidates = EVENTS.filter((event) => eventEligible(state, event));
@@ -1620,7 +2010,9 @@ function chooseEvent(state: GameState): [GameState["pendingEvent"], GameState] {
 
 function updateWorld(state: GameState): GameState {
   const next = copyState(state);
-  if ((next.turn + 1) % 4 === 0) {
+  const cycleBoundary =
+    next.timeScale === "quarter" ? next.turn % 4 === 0 : (next.turn + 1) % 4 === 0;
+  if (cycleBoundary) {
     const cycles = ["繁荣", "平稳", "放缓", "衰退"] as const;
     const roll = seededRandom(next.world.seed, 1_000 + next.turn);
     next.world.cycle = cycles[Math.floor(roll * cycles.length)];
@@ -1638,33 +2030,183 @@ function updateWorld(state: GameState): GameState {
 function settleAssets(state: GameState): [GameState, number] {
   const next = copyState(state);
   let totalChange = 0;
+  const periodsPerYear = next.timeScale === "quarter" ? 4 : 1;
   const cycleReturn = { 繁荣: 0.035, 平稳: 0.01, 放缓: -0.025, 衰退: -0.07 }[next.world.cycle];
   next.assets = next.assets.map((held, index) => {
     const definition = ASSETS.find((asset) => asset.id === held.id);
     if (!definition) return held;
     const roll = seededRandom(next.world.seed, next.turn * 37 + index + next.rngStep);
-    const shock = (roll - 0.5) * 2 * definition.volatility;
+    const shock = ((roll - 0.5) * 2 * definition.volatility) / Math.sqrt(periodsPerYear);
     const categoryModifier =
       definition.category === "房产"
         ? (next.world.housingHeat - 0.5) * 0.08
         : definition.category === "现金"
           ? next.world.interestRate * 0.3
           : 0;
-    const annualReturn = definition.expectedAnnualReturn + cycleReturn + categoryModifier + shock;
+    const annualReturn = definition.expectedAnnualReturn + cycleReturn + categoryModifier;
+    const periodReturn = annualReturn / periodsPerYear + shock;
     const oldValue = held.value;
-    const value = Math.max(oldValue * 0.18, oldValue * (1 + annualReturn));
+    const value = Math.max(oldValue * 0.18, oldValue * (1 + periodReturn));
     totalChange += value - oldValue;
     return { ...held, value };
   });
   next.rngStep += next.assets.length;
   const passiveCash = next.assets.reduce(
-    (sum, held) => sum + held.value * held.cashYield,
+    (sum, held) => sum + (held.value * held.cashYield) / periodsPerYear,
     0,
   );
   next.cash += passiveCash;
-  next.passiveIncome = passiveCash / 12;
+  next.passiveIncome = passiveCash / (next.timeScale === "quarter" ? 3 : 12);
   totalChange += passiveCash;
   return [next, totalChange];
+}
+
+function calculateAnnualIncomeTax(taxableIncome: number): number {
+  const income = Math.max(0, taxableIncome);
+  const brackets = [
+    [36_000, 0.03],
+    [108_000, 0.1],
+    [204_000, 0.2],
+    [360_000, 0.25],
+    [600_000, 0.3],
+    [960_000, 0.35],
+    [Number.POSITIVE_INFINITY, 0.45],
+  ] as const;
+  let remaining = income;
+  let previous = 0;
+  let tax = 0;
+  for (const [ceiling, rate] of brackets) {
+    const width = Math.min(remaining, ceiling - previous);
+    if (width <= 0) break;
+    tax += width * rate;
+    remaining -= width;
+    previous = ceiling;
+  }
+  return tax;
+}
+
+function settleDeepSystems(
+  state: GameState,
+  activeIncome: number,
+): [GameState, {
+  tax: number;
+  pension: number;
+  insurance: number;
+  housing: number;
+  family: number;
+  business: number;
+  reconciliation: number;
+}] {
+  const next = copyState(state);
+  if (!next.deep) {
+    return [next, { tax: 0, pension: 0, insurance: 0, housing: 0, family: 0, business: 0, reconciliation: 0 }];
+  }
+  const deep = next.deep;
+  const quarter = getQuarter(next) ?? 1;
+  const tax = activeIncome * deep.tax.withholdingRate;
+  deep.tax.yearTaxPaid += tax;
+  const pensionEmployee = activeIncome * deep.pension.contributionRate;
+  const pensionMatch = activeIncome * deep.pension.employerMatch;
+  const pensionGrowth = deep.pension.balance * (0.045 / 4);
+  deep.pension.balance += pensionEmployee + pensionMatch + pensionGrowth;
+  const insurance = deep.insurance.annualPremium / 4;
+
+  let housing = 0;
+  if (deep.housing.tenure === "owner" && deep.housing.mortgageBalance > 0) {
+    const quarterlyRate = deep.housing.mortgageRate / 4;
+    const periods = Math.max(1, deep.housing.termQuarters);
+    const payment =
+      quarterlyRate > 0
+        ? (deep.housing.mortgageBalance * quarterlyRate) /
+          (1 - Math.pow(1 + quarterlyRate, -periods))
+        : deep.housing.mortgageBalance / periods;
+    const interest = deep.housing.mortgageBalance * quarterlyRate;
+    const principal = Math.min(deep.housing.mortgageBalance, Math.max(0, payment - interest));
+    deep.housing.mortgageBalance -= principal;
+    deep.housing.termQuarters = Math.max(0, deep.housing.termQuarters - 1);
+    housing = payment;
+    const housingAnnualReturn = (deep.housing.tenure === "owner"
+      ? (next.world.housingHeat - 0.45) * 0.06
+      : 0);
+    deep.housing.propertyValue *= 1 + housingAnnualReturn / 4;
+  }
+
+  const educationSaving = deep.family.children.length * 1_200;
+  for (const child of deep.family.children) child.educationFund += 1_200;
+  const parentCare = deep.family.parentCareLevel * 1_500;
+  const family = educationSaving + parentCare;
+  let business = 0;
+  if (deep.business.active) {
+    const cycleMultiplier = { 繁荣: 1.06, 平稳: 1, 放缓: 0.93, 衰退: 0.84 }[next.world.cycle];
+    const governanceBuffer = 0.9 + deep.business.governance / 500;
+    const quarterlyRevenue = deep.business.monthlyRevenue * 3 * cycleMultiplier * governanceBuffer;
+    const quarterlyCost = deep.business.monthlyCost * 3;
+    const inventoryPurchase = Math.min(
+      Math.max(0, deep.business.cash),
+      Math.max(0, quarterlyRevenue * 0.08 - deep.business.inventory),
+    );
+    deep.business.inventory += inventoryPurchase;
+    business = quarterlyRevenue - quarterlyCost - inventoryPurchase;
+    deep.business.cash += business;
+    deep.business.inventory = Math.max(0, deep.business.inventory - quarterlyRevenue * 0.06);
+    if (deep.business.cash < -30_000) {
+      deep.business.active = false;
+      deep.business.employees = 0;
+      deep.business.monthlyRevenue = 0;
+      deep.business.monthlyCost = 0;
+      next.stress = clamp(next.stress + 12, 0, 100);
+    } else if (deep.business.cash > 60_000) {
+      const distribution = Math.min(deep.business.cash * 0.08, 12_000);
+      deep.business.cash -= distribution;
+      next.cash += distribution;
+      next.passiveIncome += distribution / 3;
+    }
+  }
+
+  let reconciliation = 0;
+  if (quarter === 4) {
+    const annualGross = next.monthlyIncome * 12;
+    const annualTax = calculateAnnualIncomeTax(annualGross - deep.tax.deductions);
+    reconciliation = deep.tax.yearTaxPaid - annualTax;
+    deep.tax.lastAnnualReconciliation = reconciliation;
+    deep.tax.yearTaxPaid = 0;
+    deep.tax.deductions = Math.round(deep.tax.deductions * 0.15);
+    next.age += 1;
+    for (const child of deep.family.children) child.age += 1;
+    deep.legacy.heirs = deep.family.children.length;
+    deep.legacy.generationScore = clamp(
+      deep.legacy.generationScore +
+        (deep.legacy.willReady ? 1.5 : 0) +
+        deep.family.children.reduce((sum, child) => sum + Math.min(2, child.educationFund / 100_000), 0),
+      0,
+      100,
+    );
+    if (
+      next.age >= deep.pension.retirementAge &&
+      next.monthlyIncome > 0 &&
+      !next.memory["进入退休"]
+    ) {
+      next.monthlyIncome = Math.round(next.monthlyIncome * 0.35);
+      const annualDraw = Math.min(deep.pension.balance * 0.04, deep.pension.balance);
+      deep.pension.balance -= annualDraw;
+      next.passiveIncome += annualDraw / 12;
+      next.memory["进入退休"] = 1;
+    }
+  }
+
+  next.cash += reconciliation - tax - pensionEmployee - insurance - housing - family;
+  return [
+    next,
+    {
+      tax,
+      pension: pensionEmployee + pensionMatch + pensionGrowth,
+      insurance,
+      housing,
+      family,
+      business,
+      reconciliation,
+    },
+  ];
 }
 
 function simulateAIMoves(state: GameState): GameState {
@@ -1700,27 +2242,43 @@ export function advanceTurn(state: GameState): ActionResult {
   }
 
   let next = updateWorld(state);
-  const completedYear = next.turn;
-  const annualActiveCash = next.monthlyIncome * 12;
-  const annualExpense = (next.fixedExpense + next.variableExpense) * 12;
-  const debtInterest = next.debt * (next.world.interestRate + 0.025);
-  const activeNet = annualActiveCash - annualExpense - debtInterest;
+  const completedPeriod = next.turn;
+  const monthsInPeriod = next.timeScale === "quarter" ? 3 : 12;
+  const periodsPerYear = next.timeScale === "quarter" ? 4 : 1;
+  const activeCash = next.monthlyIncome * monthsInPeriod;
+  const periodExpense = (next.fixedExpense + next.variableExpense) * monthsInPeriod;
+  const debtInterest = next.debt * (next.world.interestRate + 0.025) / periodsPerYear;
+  const activeNet = activeCash - periodExpense - debtInterest;
   next.cash += activeNet;
+  let deepSettlement = {
+    tax: 0,
+    pension: 0,
+    insurance: 0,
+    housing: 0,
+    family: 0,
+    business: 0,
+    reconciliation: 0,
+  };
+  if (next.deep) {
+    [next, deepSettlement] = settleDeepSystems(next, activeCash);
+  }
   next.debt = Math.max(0, next.debt + (next.cash < 0 ? Math.abs(next.cash) * 1.08 : 0));
   if (next.cash < 0) next.cash = 0;
   const [assetSettled, assetChange] = settleAssets(next);
   next = assetSettled;
-  next.health = clamp(next.health + (next.stress > 70 ? -5 : 1), 0, 100);
-  next.energy = clamp(next.energy + 12 - next.stress * 0.08, 0, 100);
-  next.stress = clamp(next.stress - 7 + (next.actionPoints <= 1 ? 4 : 0), 0, 100);
+  next.health = clamp(next.health + (next.stress > 70 ? -5 : 1) / periodsPerYear, 0, 100);
+  next.energy = clamp(next.energy + (12 - next.stress * 0.08) / periodsPerYear, 0, 100);
+  next.stress = clamp(next.stress + (-7 + (next.actionPoints <= 1 ? 4 : 0)) / periodsPerYear, 0, 100);
   next.happiness = clamp(next.happiness + (activeNet > 0 ? 1 : -3), 0, 100);
   next = simulateAIMoves(next);
   next = addHistory(next, {
     type: "settlement",
-    title: `第 ${next.turn} 年结算`,
-    description: `主动现金流 ${formatSignedMoney(activeNet)}，资产与分配现金流 ${formatSignedMoney(assetChange)}，利息成本 ${formatMoney(debtInterest)}。`,
+    title: `${getPeriodLabel(next)}结算`,
+    description: next.deep
+      ? `个人现金流 ${formatSignedMoney(activeNet)}，税费 ${formatMoney(deepSettlement.tax)}，养老金入账 ${formatMoney(deepSettlement.pension)}，保障/住房/家庭支出 ${formatMoney(deepSettlement.insurance + deepSettlement.housing + deepSettlement.family)}，企业经营 ${formatSignedMoney(deepSettlement.business)}，资产变化 ${formatSignedMoney(assetChange)}${deepSettlement.reconciliation ? `，年末汇算 ${formatSignedMoney(deepSettlement.reconciliation)}` : ""}。`
+      : `主动现金流 ${formatSignedMoney(activeNet)}，资产与分配现金流 ${formatSignedMoney(assetChange)}，利息成本 ${formatMoney(debtInterest)}。`,
     cashDelta: activeNet + assetChange,
-    tags: ["年度结算", next.world.cycle],
+    tags: [next.timeScale === "quarter" ? "季度结算" : "年度结算", next.world.cycle],
   });
 
   if (next.turn >= next.maxTurns) {
@@ -1736,12 +2294,14 @@ export function advanceTurn(state: GameState): ActionResult {
   }
 
   next.turn += 1;
-  next.actionPoints = 8;
+  next.actionPoints = next.actionBudget;
   next.plan = [];
   next.reveals = [];
   next.revealIndex = 0;
   next.consequenceScene = null;
-  next.variableExpense = Math.round(next.variableExpense * (1 + next.world.inflation));
+  next.variableExpense = Math.round(
+    next.variableExpense * (1 + next.world.inflation / periodsPerYear),
+  );
   const dueConsequences = next.delayedConsequences.filter(
     (item) => item.status === "pending" && item.dueTurn <= next.turn,
   );
@@ -1761,11 +2321,16 @@ export function advanceTurn(state: GameState): ActionResult {
   next = rolled;
   next.pendingEvent = pendingEvent;
   next.annualBriefing = createAnnualBriefing(next);
-  if (completedYear % 3 === 0) {
+  const chapterPeriod = next.timeScale === "quarter" ? 12 : 3;
+  if (completedPeriod % chapterPeriod === 0) {
     const recent = next.history.filter(
-      (entry) => entry.turn >= Math.max(1, completedYear - 2) && entry.turn <= completedYear,
+      (entry) =>
+        entry.turn >= Math.max(1, completedPeriod - chapterPeriod + 1) &&
+        entry.turn <= completedPeriod,
     );
-    const chapterIndex = Math.ceil(completedYear / 3);
+    const chapterIndex = Math.ceil(completedPeriod / chapterPeriod);
+    const completedLifeYear =
+      next.timeScale === "quarter" ? Math.ceil(completedPeriod / 4) : completedPeriod;
     const highlights = recent
       .filter((entry) => entry.type === "action" || entry.type === "event")
       .slice(-4)
@@ -1783,7 +2348,7 @@ export function advanceTurn(state: GameState): ActionResult {
     const chapter: ChapterSummary = {
       index: chapterIndex,
       title: CHAPTER_NAMES[Math.min(CHAPTER_NAMES.length - 1, chapterIndex - 1)],
-      years: `第 ${completedYear - 2}–${completedYear} 年`,
+      years: `第 ${Math.max(1, completedLifeYear - 2)}–${completedLifeYear} 年`,
       headline:
         resilience >= 72
           ? "你开始拥有穿越变化的选择权"
@@ -1809,7 +2374,7 @@ export function advanceTurn(state: GameState): ActionResult {
     next.yearPhase = "opening";
     next.chapterSummary = null;
     next.lastCard = {
-      eyebrow: `${next.annualBriefing.chapter} · 年度开场`,
+      eyebrow: `${next.annualBriefing.chapter} · ${next.timeScale === "quarter" ? "季度" : "年度"}开场`,
       title: next.annualBriefing.headline,
       narrative: next.annualBriefing.cityNews,
       outcome: next.annualBriefing.riskNote,
@@ -1823,7 +2388,7 @@ export function advanceTurn(state: GameState): ActionResult {
     message:
       next.yearPhase === "chapter"
         ? `完成${next.chapterSummary?.title ?? "三年章节"}，请查看章节总结。`
-        : "新的一年开始，请先阅读城市与人物消息。",
+        : `新的${next.timeScale === "quarter" ? "季度" : "一年"}开始，请先阅读城市与人物消息。`,
   };
 }
 
@@ -1898,7 +2463,15 @@ export function getBoardStage(state: GameState) {
 export function generateReview(state: GameState): ReviewReport {
   const netWorth = getNetWorth(state);
   const emergencyMonths = getEmergencyMonths(state);
-  const debtRatio = state.debt / Math.max(1, state.debt + state.assets.reduce((sum, item) => sum + item.value, 0) + state.cash);
+  const totalDebt = state.debt + (state.deep?.housing.mortgageBalance ?? 0);
+  const totalAssets =
+    state.cash +
+    state.assets.reduce((sum, item) => sum + item.value, 0) +
+    (state.deep?.housing.propertyValue ?? 0) +
+    (state.deep?.pension.balance ?? 0) +
+    (state.deep?.business.cash ?? 0) +
+    (state.deep?.business.inventory ?? 0);
+  const debtRatio = totalDebt / Math.max(1, totalDebt + totalAssets);
   const incomeSources = new Set<string>();
   if (state.monthlyIncome > 0) incomeSources.add("active");
   for (const asset of state.assets) incomeSources.add(asset.category);

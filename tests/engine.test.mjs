@@ -14,6 +14,7 @@ import {
   revealNextResult,
   resolvePendingEvent,
   scheduleAIInteraction,
+  scheduleDeepAction,
   scheduleLifeAction,
   scheduleSkill,
   seededRandom,
@@ -177,6 +178,78 @@ test("annual planning defers action effects until the plan is locked", () => {
   assert.ok(committed.state.cash < initial.cash);
   assert.equal(committed.state.reveals.length, 2);
   assert.equal(committed.state.reveals[0].title, "先守住正在承担的责任");
+});
+
+test("deep life unlocks a real 240-quarter model with long-term systems", () => {
+  const initial = createGame({ mode: "deep", theme: "midnight", roleId: "steady", seed: 909090 });
+  assert.equal(initial.maxTurns, 240);
+  assert.equal(initial.timeScale, "quarter");
+  assert.equal(initial.actionBudget, 12);
+  assert.equal(initial.age, 22);
+  assert.ok(initial.deep);
+
+  initial.cash = 500_000;
+  let state = beginYearPlanning(initial).state;
+  state = scheduleDeepAction(state, "tax_review").state;
+  state = scheduleDeepAction(state, "protect_family").state;
+  state = scheduleDeepAction(state, "start_business").state;
+  const committed = commitYearPlan(state);
+  assert.equal(committed.success, true);
+  assert.equal(committed.state.reveals.length, 4);
+  assert.ok(committed.state.deep.tax.deductions >= 12_000);
+  assert.ok(committed.state.deep.insurance.lifeCoverage > 0);
+  assert.equal(committed.state.deep.business.active, true);
+  assert.ok(committed.state.deep.business.monthlyRevenue > 0);
+});
+
+test("deep life settles tax, pension, insurance, business and age by quarter", () => {
+  let state = createGame({ mode: "deep", theme: "emerald", roleId: "teacher", seed: 818181 });
+  const openingPension = state.deep.pension.balance;
+  const openingAge = state.age;
+  for (let quarter = 0; quarter < 4; quarter += 1) {
+    if (state.pendingEvent) {
+      state = resolvePendingEvent(state, state.pendingEvent.event.choices[0].id).state;
+    }
+    state = beginYearPlanning(state).state;
+    state = scheduleDeepAction(state, "raise_pension").state;
+    state = commitYearPlan(state).state;
+    state = skipYearReveals(state).state;
+    state = advanceTurn(state).state;
+    if (state.yearPhase === "chapter") state = continueAfterChapter(state).state;
+  }
+  assert.equal(state.turn, 5);
+  assert.equal(state.age, openingAge + 1);
+  assert.ok(state.deep.pension.balance > openingPension);
+  assert.equal(state.deep.tax.yearTaxPaid, 0, "Q4 performs annual reconciliation");
+  assert.ok(Number.isFinite(state.deep.tax.lastAnnualReconciliation));
+  assert.ok(state.history.some((entry) => entry.tags.includes("季度结算")));
+});
+
+test("a deep life can complete all sixty years without a broken period", () => {
+  let state = createGame({ mode: "deep", theme: "paper", roleId: "analyst", seed: 717171 });
+  let guard = 0;
+  while (state.phase !== "review" && guard < 2_000) {
+    if (state.pendingEvent) {
+      state = resolvePendingEvent(state, state.pendingEvent.event.choices[0].id).state;
+    } else if (state.yearPhase === "opening") {
+      state = beginYearPlanning(state).state;
+    } else if (state.yearPhase === "planning") {
+      state = scheduleDeepAction(state, "raise_pension").state;
+      state = commitYearPlan(state).state;
+    } else if (state.yearPhase === "reveal") {
+      state = skipYearReveals(state).state;
+    } else if (state.yearPhase === "consequence") {
+      state = advanceTurn(state).state;
+    } else if (state.yearPhase === "chapter") {
+      state = continueAfterChapter(state).state;
+    }
+    guard += 1;
+  }
+  assert.equal(state.phase, "review");
+  assert.equal(state.turn, 240);
+  assert.equal(state.age, 82);
+  assert.equal(state.history.filter((entry) => entry.tags.includes("季度结算")).length, 240);
+  assert.ok(state.deep.legacy.generationScore >= 0);
 });
 
 test("AI tablemates remember interactions and can unlock relationship routes", () => {

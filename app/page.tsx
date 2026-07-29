@@ -13,6 +13,7 @@ import {
 } from "@/lib/content";
 import {
   AI_INTERACTIONS,
+  DEEP_ACTIONS,
   LIFE_ACTIONS,
   advanceTurn,
   beginYearPlanning,
@@ -25,13 +26,17 @@ import {
   generateReview,
   getEmergencyMonths,
   getFinancialFreedomProgress,
+  getLifeYear,
   getNetWorth,
+  getPeriodLabel,
+  getQuarter,
   removePlannedAction,
   revealNextResult,
   resolvePendingEvent,
   scheduleAIInteraction,
   scheduleAsset,
   scheduleCareer,
+  scheduleDeepAction,
   scheduleLifeAction,
   scheduleOpportunity,
   scheduleSkill,
@@ -41,6 +46,7 @@ import {
 import { generateOpportunityCards } from "@/lib/opportunity";
 import type {
   GameState,
+  DeepActionId,
   ModeId,
   OpportunityCard,
   ThemeId,
@@ -52,6 +58,7 @@ type ModalName =
   | "careers"
   | "assets"
   | "actions"
+  | "deep"
   | "opportunity"
   | "ledger"
   | "knowledge"
@@ -231,8 +238,8 @@ function SetupScreen({
               <span>
                 <small>发现本地存档</small>
                 <strong>
-                  {ROLES.find((item) => item.id === savedGame.roleId)?.name} · 第{" "}
-                  {savedGame.turn} 年
+                  {ROLES.find((item) => item.id === savedGame.roleId)?.name} ·{" "}
+                  {getPeriodLabel(savedGame)}
                 </strong>
               </span>
               <b>继续人生 →</b>
@@ -254,20 +261,12 @@ function SetupScreen({
                 >
                   <span className="select-card__top">
                     <strong>{item.name}</strong>
-                    <i>{item.turns} 年</i>
+                    <i>{item.timeScale === "quarter" ? `${item.turns} 季度` : `${item.turns} 年`}</i>
                   </span>
-                  <small>{item.duration}</small>
+                  <small>{item.timeScale === "quarter" ? `${item.years} 年 · ${item.duration}` : item.duration}</small>
                   <p>{item.description}</p>
                 </button>
               ))}
-              <div className="select-card is-locked" aria-label="深度人生，尚未开放">
-                <span className="select-card__top">
-                  <strong>深度人生</strong>
-                  <i>实验中</i>
-                </span>
-                <small>40–60 年</small>
-                <p>企业经营、税费、养老与长期宏观周期。</p>
-              </div>
             </div>
           </fieldset>
 
@@ -365,9 +364,8 @@ function SetupScreen({
 }
 
 function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () => void }) {
-  const normalized = state.maxTurns === 12
-    ? state.turn
-    : Math.max(1, Math.ceil((state.turn / state.maxTurns) * 12));
+  const normalized = Math.max(1, Math.ceil((state.turn / state.maxTurns) * 12));
+  const quarter = getQuarter(state);
 
   return (
     <section className="board panel-frame" aria-label="人生路线棋盘">
@@ -377,9 +375,9 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
           <h2>每条路，都有代价与可能</h2>
         </div>
         <div className="turn-seal">
-          <small>当前年份</small>
-          <b>{String(state.turn).padStart(2, "0")}</b>
-          <span>/ {state.maxTurns}</span>
+          <small>{quarter ? `年龄 ${state.age} · Q${quarter}` : "当前年份"}</small>
+          <b>{String(getLifeYear(state)).padStart(2, "0")}</b>
+          <span>/ {state.timeScale === "quarter" ? 60 : state.maxTurns}</span>
         </div>
       </header>
 
@@ -550,6 +548,79 @@ function FinanceConsole({
   );
 }
 
+function DeepSystems({ state, onOpen }: { state: GameState; onOpen: () => void }) {
+  const deep = state.deep;
+  if (!deep) return null;
+  const homeEquity = Math.max(0, deep.housing.propertyValue - deep.housing.mortgageBalance);
+  const childFund = deep.family.children.reduce((sum, child) => sum + child.educationFund, 0);
+  const items = [
+    {
+      label: "税务",
+      value: `${Math.round(deep.tax.withholdingRate * 100)}% 预缴`,
+      detail: `本年已缴 ${formatCompactMoney(deep.tax.yearTaxPaid)} · 扣除 ${formatCompactMoney(deep.tax.deductions)}`,
+    },
+    {
+      label: "保障",
+      value: formatCompactMoney(
+        deep.insurance.healthCoverage +
+          deep.insurance.lifeCoverage +
+          deep.insurance.disabilityCoverage,
+      ),
+      detail: `年保费 ${formatCompactMoney(deep.insurance.annualPremium)}`,
+    },
+    {
+      label: "养老金",
+      value: formatCompactMoney(deep.pension.balance),
+      detail: `个人 ${Math.round(deep.pension.contributionRate * 100)}% + 雇主 ${Math.round(deep.pension.employerMatch * 100)}%`,
+    },
+    {
+      label: "住房",
+      value: deep.housing.tenure === "owner" ? formatCompactMoney(homeEquity) : "租住",
+      detail:
+        deep.housing.tenure === "owner"
+          ? `房贷 ${formatCompactMoney(deep.housing.mortgageBalance)} · 剩 ${deep.housing.termQuarters} 季`
+          : "保留迁移与流动性",
+    },
+    {
+      label: "家庭",
+      value: deep.family.partnered ? `${deep.family.children.length} 名子女` : "独立财务",
+      detail: `家庭信任 ${Math.round(deep.family.familyTrust)} · 教育金 ${formatCompactMoney(childFund)}`,
+    },
+    {
+      label: "企业",
+      value: deep.business.active ? `${deep.business.employees} 人团队` : "尚未创办",
+      detail: deep.business.active
+        ? `企业现金 ${formatCompactMoney(deep.business.cash)} · 月营收 ${formatCompactMoney(deep.business.monthlyRevenue)}`
+        : "企业账户与个人账户独立",
+    },
+    {
+      label: "代际",
+      value: `${Math.round(deep.legacy.generationScore)} 分`,
+      detail: `${deep.legacy.willReady ? "遗嘱已建立" : "尚无遗嘱"} · ${deep.legacy.heirs} 位继承人`,
+    },
+  ];
+  return (
+    <section className="deep-systems panel-frame" aria-label="深度人生长期系统">
+      <header>
+        <div>
+          <span className="micro-label">60 年长期账本 · 年龄 {state.age}</span>
+          <h2>七套系统正在同时运转</h2>
+        </div>
+        <button onClick={onOpen}>安排长期行动 <span>→</span></button>
+      </header>
+      <div className="deep-systems__grid">
+        {items.map((item) => (
+          <article key={item.label}>
+            <span>{item.label}</span>
+            <b>{item.value}</b>
+            <small>{item.detail}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function StoryStage({
   state,
   onResolveEvent,
@@ -577,8 +648,10 @@ function StoryStage({
     state.yearPhase === "reveal" && reveal?.auditId
       ? state.audits.find((audit) => audit.id === reveal.auditId)
       : state.audits.at(-1);
+  const periodNoun = state.timeScale === "quarter" ? "季度" : "年度";
+  const periodLabel = getPeriodLabel(state);
   const phaseSteps = [
-    ["opening", "年度开场"],
+    ["opening", `${periodNoun}开场`],
     ["planning", "安排计划"],
     ["reveal", "逐项揭晓"],
     ["consequence", "人物回应"],
@@ -634,7 +707,7 @@ function StoryStage({
         <div className="story-card__rail">
           <span>{card.eyebrow}</span>
           <i />
-          <b>{String(state.turn).padStart(2, "0")}</b>
+              <b>{getQuarter(state) ? `Q${getQuarter(state)}` : String(state.turn).padStart(2, "0")}</b>
         </div>
         <div className="story-card__body">
           <div className="story-card__meta">
@@ -694,11 +767,11 @@ function StoryStage({
       {state.yearPhase === "opening" && !state.pendingEvent && (
         <div className="phase-actions phase-actions--opening">
           <span>
-            <b>今年不是点一下“下一年”</b>
+            <b>本{periodNoun}不是点一下“下一期”</b>
             <small>你会先安排时间，再一起揭晓结果与延迟后果。</small>
           </span>
           <button className="primary-button" onClick={onBeginPlanning}>
-            展开年度计划桌 <span>→</span>
+            展开{periodNoun}计划桌 <span>→</span>
           </button>
         </div>
       )}
@@ -707,12 +780,12 @@ function StoryStage({
         <div className="year-plan">
           <header>
             <div>
-              <span className="micro-label">第 {state.turn} 年 · 同时规划</span>
-              <h3>你的年度时间安排</h3>
+              <span className="micro-label">{periodLabel} · 同时规划</span>
+              <h3>你的{periodNoun}时间安排</h3>
             </div>
             <strong>
               {state.plan.reduce((sum, item) => sum + item.timeCost, 0)}
-              <small>/8 点已安排</small>
+              <small>/{state.actionBudget} 点已安排</small>
             </strong>
           </header>
           <div className="year-plan__timeline">
@@ -727,7 +800,7 @@ function StoryStage({
               </article>
             ))}
             {Array.from(
-              { length: Math.max(0, 8 - state.plan.reduce((sum, item) => sum + item.timeCost, 0)) },
+              { length: Math.max(0, state.actionBudget - state.plan.reduce((sum, item) => sum + item.timeCost, 0)) },
               (_, index) => <i className="plan-slot" key={index}>空</i>,
             )}
           </div>
@@ -812,10 +885,10 @@ function StoryStage({
           </div>
           <div className="phase-actions">
             <span>
-              <b>准备结算第 {state.turn} 年</b>
+              <b>准备结算{periodLabel}</b>
               <small>收入、支出、资产波动与利息将在这一步统一结算。</small>
             </span>
-            <button className="primary-button" onClick={onAdvanceYear}>完成这一年 <span>→</span></button>
+            <button className="primary-button" onClick={onAdvanceYear}>完成本{periodNoun} <span>→</span></button>
           </div>
         </div>
       )}
@@ -842,7 +915,7 @@ function StoryStage({
               : <small>下个章节继续完成任务，路线会从你的真实选择中解锁。</small>}
           </div>
           <button className="primary-button" onClick={onContinueChapter}>
-            进入第 {state.turn} 年 · {state.annualBriefing.chapter} <span>→</span>
+            进入{periodLabel} · {state.annualBriefing.chapter} <span>→</span>
           </button>
         </div>
       )}
@@ -861,7 +934,7 @@ function ActionDock({
 }) {
   const disabled = Boolean(state.pendingEvent);
   const plannedTime = state.plan.reduce((sum, item) => sum + item.timeCost, 0);
-  const remainingTime = Math.max(0, 8 - plannedTime);
+  const remainingTime = Math.max(0, state.actionBudget - plannedTime);
   const actions: Array<[ModalName, string, string, string]> = [
     ["careers", "职业", "转行与谈判", "职"],
     ["skills", "学习", "能力与天赋", "学"],
@@ -870,16 +943,19 @@ function ActionDock({
     ["network", "关系", "查看同桌角色", "人"],
     ["opportunity", "自由机会", `剩余 ${state.opportunityTokens} 次`, "✦"],
   ];
+  if (state.deep) {
+    actions.splice(4, 0, ["deep", "长期", "税·保·房·企·家", "久"]);
+  }
   return (
     <nav className="action-dock" aria-label="本回合行动">
       <div className="action-points">
         <span className="micro-label">时间预算</span>
         <div>
-          {Array.from({ length: 8 }, (_, index) => (
+          {Array.from({ length: state.actionBudget }, (_, index) => (
             <i key={index} className={index < plannedTime ? "is-filled" : ""} />
           ))}
         </div>
-        <b>{plannedTime}/8</b>
+        <b>{plannedTime}/{state.actionBudget}</b>
       </div>
       <div className="action-dock__items">
         {actions.map(([modal, label, sub, icon]) => (
@@ -948,14 +1024,16 @@ function CatalogModal({
   onCareer,
   onAsset,
   onLifeAction,
+  onDeepAction,
 }: {
-  type: "skills" | "careers" | "assets" | "actions";
+  type: "skills" | "careers" | "assets" | "actions" | "deep";
   state: GameState;
   onClose: () => void;
   onSkill: (id: string) => void;
   onCareer: (id: string) => void;
   onAsset: (id: string) => void;
   onLifeAction: (id: string) => void;
+  onDeepAction: (id: DeepActionId) => void;
 }) {
   const [filter, setFilter] = useState("全部");
   const [search, setSearch] = useState("");
@@ -964,6 +1042,7 @@ function CatalogModal({
     careers: ["职业分岔", "不被一张职业卡定义", "转行需要现金、时间、技能与环境共同支持。"],
     assets: ["资产市场", "让现金承担不同任务", "系统同时模拟收益、波动、流动性与集中风险。"],
     actions: ["人生行动", "钱不是唯一资源", "副业、家庭、关系和健康会共同改变长期结果。"],
+    deep: ["长期系统", "让 60 年不只是一个计数器", "税费、保障、养老金、住房、家庭、企业与传承会在每个季度持续结算。"],
   }[type];
 
   const items =
@@ -973,7 +1052,9 @@ function CatalogModal({
         ? CAREERS
         : type === "assets"
           ? ASSETS
-          : LIFE_ACTIONS;
+          : type === "deep"
+            ? DEEP_ACTIONS
+            : LIFE_ACTIONS;
   const categories = [
     "全部",
     ...new Set(
@@ -1065,6 +1146,30 @@ function CatalogModal({
                 <footer>
                   <span>起投 {formatMoney(asset.minimum)}</span>
                   <span>预期年化 {(asset.expectedAnnualReturn * 100).toFixed(1)}%</span>
+                </footer>
+              </button>
+            );
+          }
+          if (type === "deep") {
+            const action = item as (typeof DEEP_ACTIONS)[number];
+            const available = !action.requires || action.requires(state);
+            return (
+              <button
+                className="catalog-card"
+                key={action.id}
+                disabled={!available}
+                onClick={() => onDeepAction(action.id)}
+              >
+                <span className="catalog-card__label">{action.category} · 按季度持续</span>
+                <h3>{action.name}</h3>
+                <p>{action.description}</p>
+                <div className="tag-row">
+                  <span>长期账本</span>
+                  <span>{available ? getPeriodLabel(state) : action.requiresLabel}</span>
+                </div>
+                <footer>
+                  <span>{action.cashCost ? formatMoney(action.cashCost) : "无直接支出"}</span>
+                  <span>{action.points} 点时间</span>
                 </footer>
               </button>
             );
@@ -1240,6 +1345,33 @@ function InfoModal({
           <div><span>负债</span><b>{formatMoney(state.debt)}</b></div>
           <div><span>净资产</span><b>{formatMoney(getNetWorth(state))}</b></div>
         </div>
+        {state.deep && (
+          <>
+            <h3 className="section-title">深度人生长期账户</h3>
+            <div className="ledger-table">
+              <div>
+                <span><b>养老金账户</b><small>个人缴费 + 雇主匹配 + 长期收益</small></span>
+                <span>{Math.round(state.deep.pension.contributionRate * 100)}% 缴费</span>
+                <strong>{formatMoney(state.deep.pension.balance)}</strong>
+              </div>
+              <div>
+                <span><b>住房权益</b><small>{state.deep.housing.tenure === "owner" ? `剩余 ${state.deep.housing.termQuarters} 季` : "当前租住"}</small></span>
+                <span>房贷 {formatMoney(state.deep.housing.mortgageBalance)}</span>
+                <strong>{formatMoney(Math.max(0, state.deep.housing.propertyValue - state.deep.housing.mortgageBalance))}</strong>
+              </div>
+              <div>
+                <span><b>企业账户</b><small>{state.deep.business.active ? `${state.deep.business.employees} 人 · 治理 ${state.deep.business.governance}` : "尚未创业"}</small></span>
+                <span>库存 {formatMoney(state.deep.business.inventory)}</span>
+                <strong>{formatMoney(state.deep.business.cash)}</strong>
+              </div>
+              <div>
+                <span><b>家庭与教育金</b><small>{state.deep.family.children.length} 名子女 · 信任 {Math.round(state.deep.family.familyTrust)}</small></span>
+                <span>共同现金 {formatMoney(state.deep.family.sharedCash)}</span>
+                <strong>{formatMoney(state.deep.family.children.reduce((sum, child) => sum + child.educationFund, 0))}</strong>
+              </div>
+            </div>
+          </>
+        )}
         <h3 className="section-title">持有资产</h3>
         <div className="ledger-table">
           {state.assets.length ? state.assets.map((asset) => (
@@ -1254,7 +1386,7 @@ function InfoModal({
         <div className="history-list">
           {state.history.slice(-10).reverse().map((entry) => (
             <div key={entry.id}>
-              <span><b>{entry.title}</b><small>第 {entry.turn} 年 · {entry.description}</small></span>
+              <span><b>{entry.title}</b><small>{getPeriodLabel({ turn: entry.turn, timeScale: state.timeScale })} · {entry.description}</small></span>
               <em className={(entry.cashDelta ?? 0) >= 0 ? "is-positive" : "is-negative"}>
                 {entry.cashDelta === undefined ? "—" : formatSignedMoney(entry.cashDelta)}
               </em>
@@ -1382,10 +1514,10 @@ function InfoModal({
   return (
     <BaseModal eyebrow="如何游玩" title="每个回合，只看三件事" onClose={onClose}>
       <ol className="help-steps">
-        <li><b>01</b><span><strong>读开场</strong>城市新闻、人物消息与过去承诺会一起改变今年的棋盘。</span></li>
+        <li><b>01</b><span><strong>读开场</strong>城市新闻、人物消息与过去承诺会一起改变本期棋盘。</span></li>
         <li><b>02</b><span><strong>排计划</strong>主业占用基础时间，剩余时间同时安排学习、关系、家庭、投资或休整。</span></li>
         <li><b>03</b><span><strong>看揭晓</strong>卡牌逐张翻开，概率修正、数值变化、人物回应和延迟后果分阶段出现。</span></li>
-        <li><b>04</b><span><strong>过章节</strong>每三年生成一段人生章节，新路线由真实行动与长期因果解锁。</span></li>
+        <li><b>04</b><span><strong>过章节</strong>每三年生成一段人生章节；深度人生在每个季度额外结算长期账本。</span></li>
       </ol>
       <div className="help-rule">
         <span>自由机会</span>
@@ -1410,7 +1542,7 @@ function ReviewScreen({
     <div className="review-page" data-theme={state.theme}>
       <header className="review-topbar">
         <Brand />
-        <span>{role?.name} · {state.maxTurns} 年人生实验</span>
+        <span>{role?.name} · {state.timeScale === "quarter" ? "60 年 · 240 季度" : `${state.maxTurns} 年`}人生实验</span>
       </header>
       <main className="review-report">
         <section className="review-hero">
@@ -1474,7 +1606,7 @@ function ReviewScreen({
           <div className="turning-points">
             {report.turningPoints.map((item) => (
               <article key={item.id}>
-                <span>第 {item.turn} 年</span>
+                <span>{getPeriodLabel({ turn: item.turn, timeScale: state.timeScale })}</span>
                 <div><h3>{item.title}</h3><p>{item.description}</p></div>
                 <b className={(item.cashDelta ?? 0) >= 0 ? "is-positive" : "is-negative"}>
                   {item.cashDelta === undefined ? "非现金影响" : formatSignedMoney(item.cashDelta)}
@@ -1576,6 +1708,7 @@ function GameScreen({
           <span><small>周期</small><i className={`cycle cycle--${state.world.cycle}`}>{state.world.cycle}</i></span>
           <span><small>利率</small>{(state.world.interestRate * 100).toFixed(1)}%</span>
           <span><small>趋势</small>{state.world.platformTrend}</span>
+          {state.deep && <span><small>人生</small>{state.age} 岁 · Q{getQuarter(state)}</span>}
         </div>
         <div className="game-topbar__actions">
           <label className="theme-switcher">
@@ -1606,6 +1739,7 @@ function GameScreen({
           <Board state={state} onOpportunity={() => setModal("opportunity")} />
           <FinanceConsole state={state} onOpenLedger={() => setModal("ledger")} onOpenKnowledge={() => setModal("knowledge")} />
         </div>
+        {state.deep && <DeepSystems state={state} onOpen={() => setModal("deep")} />}
         <StoryStage
           state={state}
           onResolveEvent={(choiceId) => applyResult(resolvePendingEvent(state, choiceId), false)}
@@ -1622,7 +1756,7 @@ function GameScreen({
         <ActionDock state={state} onOpen={setModal} onAdvance={() => applyResult(commitYearPlan(state), false)} />
       )}
 
-      {(modal === "skills" || modal === "careers" || modal === "assets" || modal === "actions") && (
+      {(modal === "skills" || modal === "careers" || modal === "assets" || modal === "actions" || modal === "deep") && (
         <CatalogModal
           type={modal}
           state={state}
@@ -1631,6 +1765,7 @@ function GameScreen({
           onCareer={(id) => applyResult(scheduleCareer(state, id))}
           onAsset={(id) => applyResult(scheduleAsset(state, id))}
           onLifeAction={(id) => applyResult(scheduleLifeAction(state, id))}
+          onDeepAction={(id) => applyResult(scheduleDeepAction(state, id))}
         />
       )}
       {modal === "opportunity" && (
