@@ -20,6 +20,7 @@ import {
   skipYearReveals,
 } from "../lib/engine.ts";
 import { generateOpportunityCards } from "../lib/opportunity.ts";
+import { generateOpportunityCardsWithAI } from "../lib/ai.ts";
 
 test("content library keeps the MVP breadth", () => {
   assert.ok(CAREERS.length >= 24, "at least 24 careers");
@@ -53,6 +54,94 @@ test("AI opportunity parsing generates choices but never direct effects", () => 
   assert.ok(result.cards.every((card) => card.cashCost >= 0));
   assert.ok(result.cards.every((card) => card.baseProbability > 0 && card.baseProbability < 1));
   assert.ok(result.cards.every((card) => !("effects" in card)));
+  assert.equal(result.source, "local");
+});
+
+test("real AI output is schema-bound and numeric rules stay server-side", async () => {
+  let requestBody;
+  const payload = {
+    normalizedGoal: "保留主业，用真实用户反馈验证财商学习工具",
+    cards: [
+      {
+        strategy: "pilot",
+        title: "访谈十位真实用户",
+        approach: "低成本访谈",
+        category: "income",
+        description: "保留主业，在四周内完成十次访谈和一个可点击原型，只验证最痛的问题。",
+        duration: "4–8 周",
+        costBand: "low",
+        timeBand: "light",
+        risk: "低",
+        skillTags: ["research", "product"],
+        environmentTags: ["互联网"],
+        upside: "获得可复用的问题证据和第一批愿意继续测试的用户。",
+        downside: "需求不成立，但只损失少量现金和时间。",
+      },
+      {
+        strategy: "build",
+        title: "完成三个月产品试验",
+        approach: "系统化建设",
+        category: "income",
+        description: "围绕已验证问题开发最小产品，设置留存、付费意向和交付成本三个复盘点。",
+        duration: "3–6 个月",
+        costBand: "medium",
+        timeBand: "focused",
+        risk: "中",
+        skillTags: ["product", "delivery"],
+        environmentTags: ["互联网", "教育"],
+        upside: "形成产品、交付和收入结构的组合证据。",
+        downside: "投入没有形成留存，需要停止或缩小范围。",
+      },
+      {
+        strategy: "partner",
+        title: "与教师共同验证课程",
+        approach: "寻找合作伙伴",
+        category: "relationship",
+        description: "寻找有真实教学场景的伙伴，先约定用户、内容、知识产权、分工和退出条件。",
+        duration: "3–6 个月",
+        costBand: "medium",
+        timeBand: "focused",
+        risk: "高",
+        skillTags: ["negotiation", "teaching"],
+        environmentTags: ["教育"],
+        upside: "互补资源缩短验证周期并打开真实课堂入口。",
+        downside: "合作边界不清会同时损害项目与关系。",
+      },
+    ],
+  };
+  const result = await generateOpportunityCardsWithAI(
+    "保留主业，开发一个财商学习工具。",
+    {
+      turn: 2,
+      maxTurns: 12,
+      city: "星澜市",
+      cycle: "平稳",
+      roleName: "产品经理",
+      cash: 80_000,
+      monthlyIncome: 16_000,
+      fixedExpense: 9_000,
+      energy: 72,
+      relationship: 61,
+      skills: ["product", "research"],
+      memories: ["持续学习"],
+    },
+    {
+      apiKey: "test-key",
+      model: "test-model",
+      fetcher: async (_url, init) => {
+        requestBody = JSON.parse(init.body);
+        return new Response(JSON.stringify({ output_text: JSON.stringify(payload) }));
+      },
+    },
+  );
+  assert.equal(result.source, "openai");
+  assert.equal(result.model, "test-model");
+  assert.equal(result.cards.length, 3);
+  assert.deepEqual(result.cards.map((card) => card.timeCost), [1, 3, 3]);
+  assert.ok(result.cards.every((card) => card.cashCost <= 28_000));
+  assert.ok(result.cards.every((card) => card.baseProbability > 0 && card.baseProbability < 1));
+  assert.equal(requestBody.text.format.type, "json_schema");
+  assert.ok(!JSON.stringify(payload).includes("baseProbability"));
 });
 
 test("actions consume real resources and add auditable history", () => {

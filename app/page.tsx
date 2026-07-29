@@ -1101,6 +1101,7 @@ function OpportunityModal({
   const [cards, setCards] = useState<OpportunityCard[]>([]);
   const [mapping, setMapping] = useState<string[]>([]);
   const [normalizedGoal, setNormalizedGoal] = useState("");
+  const [generationSource, setGenerationSource] = useState<"openai" | "local" | "">("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -1116,7 +1117,27 @@ function OpportunityModal({
           const response = await fetch("/api/opportunity", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ intent }),
+            body: JSON.stringify({
+              intent,
+              context: {
+                turn: state.turn,
+                maxTurns: state.maxTurns,
+                city: state.world.city,
+                cycle: state.world.cycle,
+                roleName: ROLES.find((item) => item.id === state.roleId)?.name,
+                cash: state.cash,
+                monthlyIncome: state.monthlyIncome,
+                fixedExpense: state.fixedExpense,
+                energy: state.energy,
+                relationship: state.relationship,
+                skills: Object.entries(state.skills)
+                  .filter(([, level]) => level > 0)
+                  .map(([id]) => id),
+                memories: Object.entries(state.memory)
+                  .filter(([, count]) => count > 0)
+                  .map(([tag]) => tag),
+              },
+            }),
           });
           const payload = await response.json();
           if (!response.ok) throw new Error(payload.error);
@@ -1128,6 +1149,7 @@ function OpportunityModal({
       setCards(result.cards);
       setMapping(result.ruleMapping);
       setNormalizedGoal(result.normalizedGoal);
+      setGenerationSource(result.source);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法解析这次想法。");
     } finally {
@@ -1164,7 +1186,12 @@ function OpportunityModal({
       {cards.length > 0 && (
         <div className="opportunity-results">
           <div className="mapping-note">
-            <span>归一化目标</span>
+            <span>
+              归一化目标
+              <i className={`ai-source ai-source--${generationSource}`}>
+                {generationSource === "openai" ? "真实 AI" : "本地规则"}
+              </i>
+            </span>
             <strong>{normalizedGoal}</strong>
             <div>{mapping.map((item) => <small key={item}>{item}</small>)}</div>
           </div>

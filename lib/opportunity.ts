@@ -1,4 +1,5 @@
 import type { ActionCategory, OpportunityCard, RiskLevel } from "./types.ts";
+import type { OpportunityGenerationResult } from "./ai.ts";
 
 interface IntentProfile {
   category: ActionCategory;
@@ -152,12 +153,7 @@ function makeCard(
   };
 }
 
-export function generateOpportunityCards(input: string): {
-  intent: string;
-  normalizedGoal: string;
-  cards: OpportunityCard[];
-  ruleMapping: string[];
-} {
+export function generateOpportunityCards(input: string): OpportunityGenerationResult {
   const sourceIntent = cleanIntent(input);
   if (sourceIntent.length < 4) {
     throw new Error("请至少用一句完整的话描述你的想法。");
@@ -211,7 +207,9 @@ export function generateOpportunityCards(input: string): {
     intent: sourceIntent,
     normalizedGoal: profile.normalizedGoal,
     cards,
+    source: "local",
     ruleMapping: [
+      "生成来源：本地规则映射（服务端 AI 未配置或不可用）",
       `行动类别：${profile.category}`,
       `相关技能：${profile.skillTags.join("、")}`,
       `环境原子：${profile.environmentTags.join("、")}`,
