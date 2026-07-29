@@ -239,6 +239,31 @@ async function getTrades(db: D1Database, code: string): Promise<TradeRow[]> {
   return result.results;
 }
 
+async function promoteHostIfNeeded(db: D1Database, room: RoomRow): Promise<void> {
+  const players = await getPlayers(db, room.code);
+  const host = players.find((player) => player.id === room.host_player_id);
+  const hostUnavailable =
+    !host ||
+    host.control === "ai" ||
+    !host.online ||
+    Date.now() - host.last_seen > HUMAN_STALE_MS;
+  if (!hostUnavailable) return;
+  const nextHost = players.find(
+    (player) =>
+      player.id !== room.host_player_id &&
+      player.control === "human" &&
+      player.online &&
+      Date.now() - player.last_seen <= HUMAN_STALE_MS,
+  );
+  if (!nextHost) return;
+  await db
+    .prepare(
+      "UPDATE multiplayer_rooms SET host_player_id = ?, version = version + 1, updated_at = ? WHERE code = ? AND host_player_id = ?",
+    )
+    .bind(nextHost.id, Date.now(), room.code, room.host_player_id)
+    .run();
+}
+
 async function authenticate(
   db: D1Database,
   request: Request,
@@ -445,6 +470,7 @@ async function applySettlement(db: D1Database, room: RoomRow): Promise<void> {
 async function snapshot(db: D1Database, code: string): Promise<Response> {
   const room = await getRoom(db, code);
   if (!room) return json({ error: "房间不存在或已经关闭。" }, 404);
+  await promoteHostIfNeeded(db, room);
   if (room.phase === "planning") {
     await tickRoom(db, room);
   } else if (room.phase === "negotiation") {
@@ -705,6 +731,7 @@ async function handleAction(
       .prepare("UPDATE multiplayer_players SET control = 'ai', online = 0, last_seen = ? WHERE id = ?")
       .bind(now - HUMAN_STALE_MS - 1, player.id)
       .run();
+    await promoteHostIfNeeded(db, room);
     if (room.phase === "planning") await tickRoom(db, room);
     return json({ ok: true });
   }
