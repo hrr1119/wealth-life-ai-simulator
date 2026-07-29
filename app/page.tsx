@@ -69,6 +69,68 @@ function safeLoadSave(): GameState | null {
   }
 }
 
+function copyTextFallback(text: string): boolean {
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  const copied = document.execCommand("copy");
+  field.remove();
+  return copied;
+}
+
+function ShareButton({
+  compact = false,
+  className = "",
+}: {
+  compact?: boolean;
+  className?: string;
+}) {
+  const [feedback, setFeedback] = useState("");
+
+  async function share() {
+    const data = {
+      title: "财富人生｜先把人生，走一遍",
+      text: "在一个独立世界里，提前模拟职业、现金流、投资、关系与人生选择。",
+      url: window.location.href,
+    };
+
+    try {
+      if (navigator.share) {
+        await navigator.share(data);
+        setFeedback("已分享");
+      } else {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(data.url);
+        } else if (!copyTextFallback(data.url)) {
+          throw new Error("copy failed");
+        }
+        setFeedback("链接已复制");
+      }
+      window.setTimeout(() => setFeedback(""), 2200);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setFeedback("请复制地址栏链接");
+      window.setTimeout(() => setFeedback(""), 2600);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`share-trigger ${className}`.trim()}
+      onClick={share}
+      aria-label="分享财富人生体验链接"
+    >
+      <span aria-hidden="true">↗</span>
+      <b>{feedback || (compact ? "分享" : "分享体验")}</b>
+    </button>
+  );
+}
+
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`brand ${compact ? "brand--compact" : ""}`}>
@@ -102,9 +164,12 @@ function SetupScreen({
     <div className="setup" data-theme={theme}>
       <header className="setup__nav">
         <Brand />
-        <div className="setup__nav-note">
-          <span className="live-dot" />
-          规则内自由 · 本地存档
+        <div className="setup__nav-actions">
+          <div className="setup__nav-note">
+            <span className="live-dot" />
+            规则内自由 · 本地存档
+          </div>
+          <ShareButton />
         </div>
       </header>
 
@@ -181,7 +246,7 @@ function SetupScreen({
                 >
                   <span className="select-card__top">
                     <strong>{item.name}</strong>
-                    <i>{item.turn} 年</i>
+                    <i>{item.turns} 年</i>
                   </span>
                   <small>{item.duration}</small>
                   <p>{item.description}</p>
@@ -320,13 +385,8 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
           {BOARD_STAGES.map((stage, index) => {
             const status = stage.turn < normalized ? "done" : stage.turn === normalized ? "current" : "future";
             const isOpportunity = stage.key === "freedom";
-            return (
-              <button
-                key={stage.key}
-                className={`board-node board-node--${index + 1} is-${status} ${isOpportunity ? "is-opportunity" : ""}`}
-                onClick={isOpportunity ? onOpportunity : undefined}
-                aria-label={`${stage.label}，${status === "current" ? "当前位置" : status === "done" ? "已经历" : "未来节点"}`}
-              >
+            const nodeContent = (
+              <>
                 <span className="board-node__index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="board-node__icon" aria-hidden="true">
                   {["始", "学", "职", "市", "契", "家", "✦", "势", "身", "业", "护", "终"][index]}
@@ -334,7 +394,24 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
                 <strong>{stage.label}</strong>
                 <small>{stage.type}</small>
                 {status === "current" && <span className="pawn" aria-hidden="true">你</span>}
+              </>
+            );
+            const className = `board-node board-node--${index + 1} is-${status} ${isOpportunity ? "is-opportunity" : ""}`;
+            const label = `${stage.label}，${status === "current" ? "当前位置" : status === "done" ? "已经历" : "未来节点"}`;
+            return isOpportunity ? (
+              <button
+                key={stage.key}
+                type="button"
+                className={className}
+                onClick={onOpportunity}
+                aria-label={`${label}，打开自由机会`}
+              >
+                {nodeContent}
               </button>
+            ) : (
+              <div key={stage.key} className={className} aria-label={label}>
+                {nodeContent}
+              </div>
             );
           })}
         </div>
@@ -346,7 +423,7 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
       </div>
 
       <div className="tablemates">
-        <span className="micro-label">同桌人生</span>
+        <span className="micro-label">AI 同桌人生</span>
         <div className="tablemates__list">
           {state.aiPlayers.map((player) => (
             <div className="tablemate" key={player.id} title={`${player.goal} · ${player.currentMove}`}>
@@ -562,7 +639,7 @@ function ActionDock({
       </div>
       <button className="advance-button" onClick={onAdvance} disabled={disabled}>
         <span>
-          <small>完成行动后</small>
+          <small>{state.actionPoints === 0 ? "时间预算已用完" : `将放弃剩余 ${state.actionPoints} 点`}</small>
           推进一年
         </span>
         <b>→</b>
@@ -775,17 +852,21 @@ function OpportunityModal({
     setLoading(true);
     try {
       let result: ReturnType<typeof generateOpportunityCards>;
-      try {
-        const response = await fetch("/api/opportunity", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ intent }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error);
-        result = payload;
-      } catch {
+      if (document.body.dataset.runtime === "static") {
         result = generateOpportunityCards(intent);
+      } else {
+        try {
+          const response = await fetch("/api/opportunity", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ intent }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error);
+          result = payload;
+        } catch {
+          result = generateOpportunityCards(intent);
+        }
       }
       setCards(result.cards);
       setMapping(result.ruleMapping);
@@ -1107,6 +1188,7 @@ function ReviewScreen({
           <span className="micro-label">核心原则</span>
           <blockquote>先确认自己能否承受最坏结果，再决定是否下注；把每次选择当成一场小型实验。</blockquote>
           <div>
+            <ShareButton className="share-trigger--review" />
             <button className="secondary-button" onClick={onReturn}>返回开局</button>
             <button className="primary-button" onClick={onRestart}>用同一身份再走一遍 <span>→</span></button>
           </div>
@@ -1164,7 +1246,8 @@ function GameScreen({
               {THEMES.map((theme) => <option value={theme.id} key={theme.id}>{theme.name}</option>)}
             </select>
           </label>
-          <button onClick={() => setModal("help")} aria-label="帮助">?</button>
+          <ShareButton compact className="share-trigger--topbar" />
+          <button className="help-button" onClick={() => setModal("help")} aria-label="帮助">?</button>
           <button className="identity-button" onClick={onExit}>
             <span>{role?.name.slice(0, 1)}</span>
             <b>{role?.name}</b>
@@ -1207,6 +1290,7 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [savedGame, setSavedGame] = useState<GameState | null>(null);
   const [state, setState] = useState<GameState | null>(null);
+  const screen = state?.phase ?? "setup";
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1220,6 +1304,10 @@ export default function Home() {
     if (!state || !mounted) return;
     window.localStorage.setItem(SAVE_KEY, JSON.stringify({ ...state, savedAt: Date.now() }));
   }, [state, mounted]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [screen]);
 
   if (!mounted) {
     return (

@@ -2,6 +2,7 @@
   "name": "wealth-life-ai-simulator",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.4.1",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -11,13 +12,14 @@
     "build:share": "vite build --config vite.share.config.ts",
     "start": "vinext start",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "check": "npm run test && npm run build",
+    "typecheck": "tsc --noEmit --incremental false",
+    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build && pnpm build:share",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
-    "next": "16.2.6",
+    "next": "16.2.12",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
@@ -31,7 +33,7 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.2.12",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",

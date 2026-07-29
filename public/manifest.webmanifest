@@ -1,0 +1,19 @@
+{
+  "name": "财富人生｜AI 开放式人生财商模拟",
+  "short_name": "财富人生",
+  "description": "在规则引擎裁决的独立世界里，模拟职业、现金流、投资、关系与人生选择。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e8e1d3",
+  "theme_color": "#092f2a",
+  "icons": [
+    {
+      "src": "./favicon.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

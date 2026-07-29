@@ -24,6 +24,7 @@ body {
   margin: 0;
   color: var(--ink);
   font-family: var(--font-sans);
+  overflow-x: hidden;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
@@ -271,6 +272,44 @@ select:focus-visible {
   letter-spacing: 0.12em;
 }
 
+.setup__nav-actions {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+}
+
+.share-trigger {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-raised) 78%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  color: var(--ink);
+  display: inline-flex;
+  gap: 7px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 13px;
+  transition: border-color 150ms ease, transform 150ms ease, background 150ms ease;
+}
+
+.share-trigger:hover {
+  background: var(--surface-raised);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.share-trigger span {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.share-trigger b {
+  font-size: 9px;
+  font-weight: 780;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 .live-dot {
   background: var(--positive);
   border-radius: 50%;
@@ -480,6 +519,7 @@ select:focus-visible {
 .option-group {
   border: 0;
   margin: 24px 0 0;
+  min-inline-size: 0;
   padding: 0;
 }
 
@@ -882,6 +922,23 @@ select:focus-visible {
   min-width: 34px;
 }
 
+.game-topbar .share-trigger {
+  background: color-mix(in srgb, var(--board-ink) 7%, transparent);
+  border-color: color-mix(in srgb, var(--board-ink) 12%, transparent);
+  border-radius: 9px;
+  color: var(--board-ink);
+  padding: 0 10px;
+}
+
+.game-topbar .share-trigger:hover {
+  background: color-mix(in srgb, var(--board-ink) 13%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.game-topbar .share-trigger b {
+  font-size: 8px;
+}
+
 .theme-switcher {
   gap: 4px;
   padding: 0 8px;
@@ -1103,7 +1160,7 @@ select:focus-visible {
 .board-node--11 { grid-column: 4; grid-row: 3; }
 .board-node--12 { grid-column: 5; grid-row: 3; }
 
-.board-node:hover {
+button.board-node:hover {
   border-color: var(--accent);
   transform: translateY(-2px);
 }
@@ -3033,6 +3090,20 @@ select:focus-visible {
   gap: 9px;
 }
 
+.share-trigger--review {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--board-ink) 24%, transparent);
+  border-radius: 10px;
+  color: var(--board-ink);
+  min-height: 0;
+  padding: 11px 15px;
+}
+
+.share-trigger--review:hover {
+  background: color-mix(in srgb, var(--board-ink) 8%, transparent);
+  border-color: var(--accent);
+}
+
 .primary-button,
 .secondary-button {
   border-radius: 10px;
@@ -3129,13 +3200,16 @@ select:focus-visible {
   }
 
   .setup__main {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     margin-top: 40px;
   }
 
-  .setup__story {
+  .setup__story,
+  .setup-card {
     max-width: 760px;
+    min-width: 0;
     padding-bottom: 30px;
+    width: 100%;
   }
 
   .setup__principles {
@@ -3221,6 +3295,10 @@ select:focus-visible {
     display: none;
   }
 
+  .setup__nav-actions {
+    gap: 0;
+  }
+
   .setup__story {
     padding: 10px 2px 12px;
   }
@@ -3274,6 +3352,18 @@ select:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .role-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .role-tabs button {
+    min-height: 42px;
+    min-width: 0;
+    width: 100%;
+  }
+
   .role-detail dl {
     justify-content: space-between;
     width: 100%;
@@ -3284,17 +3374,30 @@ select:focus-visible {
   }
 
   .game {
-    padding-bottom: 88px;
+    padding-bottom: calc(122px + env(safe-area-inset-bottom, 0px));
   }
 
   .game-topbar {
+    gap: 10px;
     min-height: 58px;
     padding: 9px 12px;
   }
 
-  .theme-switcher,
-  .game-topbar__actions > button:not(.identity-button) {
+  .theme-switcher {
     display: none;
+  }
+
+  .game-topbar__actions {
+    gap: 5px;
+  }
+
+  .game-topbar__actions > button {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .game-topbar .share-trigger {
+    padding: 0 9px;
   }
 
   .identity-button b {
@@ -3303,6 +3406,10 @@ select:focus-visible {
 
   .game-main {
     padding: 12px 10px 20px;
+  }
+
+  .finance-console {
+    order: -1;
   }
 
   .panel-heading {
@@ -3343,6 +3450,15 @@ select:focus-visible {
     display: none;
   }
 
+  .board-node strong {
+    font-size: 11px;
+  }
+
+  .board-node small {
+    font-size: 8px;
+    opacity: 0.7;
+  }
+
   .board__legend {
     bottom: 7px;
   }
@@ -3379,11 +3495,18 @@ select:focus-visible {
 
   .action-dock {
     grid-template-columns: 1fr 94px;
-    padding: 6px 8px;
+    min-height: 108px;
+    padding: 6px 8px max(6px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .action-dock__items {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
   }
 
   .action-dock__items button {
-    min-width: 70px;
+    min-height: 44px;
+    min-width: 0;
     padding: 4px 6px;
   }
 

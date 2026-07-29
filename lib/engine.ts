@@ -683,7 +683,12 @@ export function takeLifeAction(state: GameState, actionId: string): ActionResult
     type: "action",
     title: action.name,
     description: outcome,
-    cashDelta: -action.cashCost + ((snapshot.success ? action.success.cash : action.failure.cash) ?? 0),
+    cashDelta:
+      -action.cashCost +
+      (() => {
+        const effects = snapshot.success ? action.success : action.failure;
+        return "cash" in effects && typeof effects.cash === "number" ? effects.cash : 0;
+      })(),
     tags: ["行动", action.category, ...action.knowledge],
   });
   return { state: next, success: true, message: outcome };

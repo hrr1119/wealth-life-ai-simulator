@@ -15,6 +15,12 @@ export async function generateMetadata(): Promise<Metadata> {
     title: "财富人生｜AI 开放式人生财商模拟",
     description,
     applicationName: "财富人生",
+    manifest: "/manifest.webmanifest",
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "black-translucent",
+      title: "财富人生",
+    },
     keywords: ["财商游戏", "人生模拟", "现金流", "AI游戏", "策略桌游"],
     icons: {
       icon: "/favicon.png",
