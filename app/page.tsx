@@ -44,6 +44,7 @@ import {
   upgradeGameState,
 } from "@/lib/engine";
 import { generateOpportunityCards } from "@/lib/opportunity";
+import MultiplayerScreen from "@/app/multiplayer";
 import type {
   GameState,
   DeepActionId,
@@ -164,10 +165,12 @@ function SetupScreen({
   savedGame,
   onStart,
   onContinue,
+  onMultiplayer,
 }: {
   savedGame: GameState | null;
   onStart: (mode: ModeId, theme: ThemeId, roleId: string) => void;
   onContinue: () => void;
+  onMultiplayer: () => void;
 }) {
   const [mode, setMode] = useState<ModeId>("quick");
   const [theme, setTheme] = useState<ThemeId>("emerald");
@@ -180,6 +183,9 @@ function SetupScreen({
       <header className="setup__nav">
         <Brand />
         <div className="setup__nav-actions">
+          <button className="multiplayer-trigger" onClick={onMultiplayer}>
+            <span>●</span> 2–4 人联机
+          </button>
           <div className="setup__nav-note">
             <span className="live-dot" />
             规则内自由 · 本地存档
@@ -1788,11 +1794,14 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [savedGame, setSavedGame] = useState<GameState | null>(null);
   const [state, setState] = useState<GameState | null>(null);
+  const [multiplayerOpen, setMultiplayerOpen] = useState(false);
   const screen = state?.phase ?? "setup";
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setSavedGame(safeLoadSave());
+      const params = new URLSearchParams(window.location.search);
+      setMultiplayerOpen(params.get("multi") === "1" || Boolean(params.get("room")));
       setMounted(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -1816,11 +1825,21 @@ export default function Home() {
     );
   }
 
+  if (multiplayerOpen) {
+    return (
+      <MultiplayerScreen
+        theme={state?.theme ?? "emerald"}
+        onExit={() => setMultiplayerOpen(false)}
+      />
+    );
+  }
+
   if (!state) {
     return (
       <SetupScreen
         savedGame={savedGame}
         onContinue={() => savedGame && setState(savedGame)}
+        onMultiplayer={() => setMultiplayerOpen(true)}
         onStart={(mode, theme, roleId) => {
           const next = createGame({ mode, theme, roleId });
           setSavedGame(next);

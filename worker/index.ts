@@ -1,8 +1,10 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { handleMultiplayerRequest, type D1Database } from "./multiplayer.ts";
 
 interface Env {
+  DB?: D1Database;
   ASSETS: {
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
   };
@@ -39,6 +41,10 @@ const worker = {
           return result.response();
         },
       }, allowedWidths);
+    }
+
+    if (url.pathname === "/api/multiplayer") {
+      return handleMultiplayerRequest(request, env.DB);
     }
 
     return handler.fetch(request, env, ctx);

@@ -22,6 +22,11 @@ import {
 } from "../lib/engine.ts";
 import { generateOpportunityCards } from "../lib/opportunity.ts";
 import { generateOpportunityCardsWithAI } from "../lib/ai.ts";
+import {
+  MULTIPLAYER_ACTIONS,
+  MULTIPLAYER_WORLD_EVENTS,
+  validateMultiplayerPlanSelection,
+} from "../lib/multiplayer.ts";
 
 test("content library keeps the MVP breadth", () => {
   assert.ok(CAREERS.length >= 24, "at least 24 careers");
@@ -35,6 +40,40 @@ test("the seeded random stream is deterministic and bounded", () => {
   const second = Array.from({ length: 20 }, (_, index) => seededRandom(20260728, index));
   assert.deepEqual(first, second);
   assert.ok(first.every((value) => value >= 0 && value < 1));
+});
+
+test("multiplayer plans enforce simultaneous room boundaries", () => {
+  assert.ok(MULTIPLAYER_ACTIONS.length >= 8);
+  assert.ok(MULTIPLAYER_WORLD_EVENTS.length >= 5);
+  assert.equal(new Set(MULTIPLAYER_ACTIONS.map((action) => action.id)).size, MULTIPLAYER_ACTIONS.length);
+  const valid = validateMultiplayerPlanSelection(
+    [{ id: "career_sprint" }, { id: "build_network" }],
+    60_000,
+  );
+  assert.deepEqual(valid?.map((item) => item.id), ["career_sprint", "build_network"]);
+  assert.equal(
+    validateMultiplayerPlanSelection(
+      [
+        { id: "side_business" },
+        { id: "career_sprint" },
+        { id: "family_commitment" },
+        { id: "build_reserve" },
+      ],
+      60_000,
+    ),
+    null,
+    "more than three simultaneous actions is rejected",
+  );
+  assert.equal(
+    validateMultiplayerPlanSelection([{ id: "market_invest" }], 2_000),
+    null,
+    "a plan cannot reserve more cash than the player owns",
+  );
+  assert.equal(
+    validateMultiplayerPlanSelection([{ id: "build_reserve" }, { id: "build_reserve" }], 60_000),
+    null,
+    "duplicate actions are rejected",
+  );
 });
 
 test("a new game reproduces its world from the same seed", () => {
