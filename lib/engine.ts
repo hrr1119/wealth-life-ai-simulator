@@ -11,14 +11,22 @@ import {
 } from "./content.ts";
 import type {
   ActionResult,
+  AnnualBriefing,
+  ChapterSummary,
+  ConsequenceScene,
+  DelayedConsequence,
+  EventDefinition,
   GameState,
   HistoryEntry,
   NewGameConfig,
   NumericEffects,
   OpportunityCard,
+  PlannedAction,
   ProbabilitySnapshot,
+  QuestState,
   ReviewReport,
   TalentState,
+  YearReveal,
 } from "./types.ts";
 
 const TALENT_KEYS = ["表达", "分析", "技术", "销售", "管理", "创意", "手艺", "研究"];
@@ -160,9 +168,43 @@ function copyState(state: GameState): GameState {
     ),
     memory: { ...state.memory },
     revealedKnowledge: [...state.revealedKnowledge],
+    annualBriefing: {
+      ...state.annualBriefing,
+      message: { ...state.annualBriefing.message },
+    },
+    plan: state.plan.map((item) => ({
+      ...item,
+      payload: item.payload ? { ...item.payload } : undefined,
+    })),
+    reveals: state.reveals.map((item) => ({
+      ...item,
+      statChanges: item.statChanges.map((change) => ({ ...change })),
+      tags: [...item.tags],
+    })),
+    consequenceScene: state.consequenceScene
+      ? {
+          ...state.consequenceScene,
+          unlocked: [...state.consequenceScene.unlocked],
+          delayed: [...state.consequenceScene.delayed],
+        }
+      : null,
+    chapterSummary: state.chapterSummary
+      ? {
+          ...state.chapterSummary,
+          highlights: [...state.chapterSummary.highlights],
+          unlockedRoutes: [...state.chapterSummary.unlockedRoutes],
+        }
+      : null,
+    delayedConsequences: state.delayedConsequences.map((item) => ({
+      ...item,
+      effects: { ...item.effects },
+    })),
+    unlockedRoutes: [...state.unlockedRoutes],
+    quests: state.quests.map((quest) => ({ ...quest })),
+    chainProgress: { ...state.chainProgress },
     audits: [...state.audits],
     history: [...state.history],
-    aiPlayers: state.aiPlayers.map((player) => ({ ...player })),
+    aiPlayers: state.aiPlayers.map((player) => ({ ...player, memories: [...player.memories] })),
     careerHistory: [...state.careerHistory],
     pendingEvent: state.pendingEvent
       ? { ...state.pendingEvent, event: state.pendingEvent.event }
@@ -219,6 +261,135 @@ function createWorld(seed: number) {
   };
 }
 
+const CHAPTER_NAMES = ["起步期", "探索期", "扩张期", "承压期", "转型期", "收获期"];
+
+function getChapterName(turn: number): string {
+  return CHAPTER_NAMES[Math.min(CHAPTER_NAMES.length - 1, Math.floor((turn - 1) / 3))];
+}
+
+function createCorePlan(state: Pick<GameState, "turn" | "currentCareerId">): PlannedAction {
+  const career = CAREERS.find((item) => item.id === state.currentCareerId);
+  return {
+    id: `plan-${state.turn}-core`,
+    kind: "core",
+    targetId: "primary_work",
+    label: career ? `履行主业 · ${career.name}` : "履行主业",
+    category: "主业",
+    timeCost: 4,
+    cashCost: 0,
+  };
+}
+
+function createDefaultQuests(): QuestState[] {
+  return [
+    {
+      id: "reserve",
+      title: "六个月选择权",
+      description: "把应急金覆盖提高到 6 个月。",
+      progress: 0,
+      target: 6,
+      status: "active",
+      rewardRoute: "逆周期行动",
+    },
+    {
+      id: "learning",
+      title: "能力留下证据",
+      description: "完成 3 次学习或技能相关行动。",
+      progress: 0,
+      target: 3,
+      status: "active",
+      rewardRoute: "跨界职业",
+    },
+    {
+      id: "alliance",
+      title: "建立可信同盟",
+      description: "让一位同桌角色的信任达到 70。",
+      progress: 0,
+      target: 70,
+      status: "active",
+      rewardRoute: "联合项目",
+    },
+  ];
+}
+
+function createAnnualBriefing(state: GameState): AnnualBriefing {
+  const chapter = getChapterName(state.turn);
+  const cycleCopy = {
+    繁荣: "资本与招聘同时升温，但高估值正在放大判断代价。",
+    平稳: "城市仍在增长，只是每个机会都更依赖真实能力与交付。",
+    放缓: "订单和岗位开始分化，现金缓冲正在变成谈判筹码。",
+    衰退: "收缩已经传到街区与办公室，但降本、照护和再训练需求逆势出现。",
+  }[state.world.cycle];
+  const player = state.aiPlayers[(state.turn - 1) % Math.max(1, state.aiPlayers.length)];
+  const due = state.delayedConsequences?.find(
+    (item) => item.status === "pending" && item.dueTurn <= state.turn + 1,
+  );
+  const newestRoute = state.unlockedRoutes?.at(-1);
+  return {
+    year: state.turn,
+    chapter,
+    headline: `${state.world.city} · 第 ${state.turn} 年：${state.world.cycle}里的新秩序`,
+    cityNews: `${cycleCopy}${state.world.platformTrend}正在重排本地机会，当前利率为 ${(state.world.interestRate * 100).toFixed(1)}%。`,
+    message: {
+      sender: player?.name ?? "城市观察员",
+      role: player?.archetype ?? "同桌角色",
+      body: player
+        ? `“我今年准备${player.currentMove}。如果我们的目标冲突，我会优先守住：${player.boundary}。”`
+        : "“先把有限时间放到最重要的承诺上。”",
+    },
+    aiSummary: state.aiPlayers
+      .map((item) => `${item.name}${item.currentMove}`)
+      .join("；"),
+    routeUpdate: newestRoute
+      ? `你过去的选择已解锁「${newestRoute}」，它会改变后续事件与合作入口。`
+      : `棋盘上的「${BOARD_STAGES[Math.min(BOARD_STAGES.length - 1, state.turn - 1)].label}」正在成为今年的主场景。`,
+    riskNote: due
+      ? `延迟后果临近：${due.title}将在${due.dueTurn === state.turn ? "今年" : "下一年"}兑现。`
+      : state.world.cycle === "衰退" || state.world.cycle === "放缓"
+        ? "风险区域：主业稳定性与现金流缓冲会共同影响下一次职业事件。"
+        : "风险区域：繁荣期的过度扩张会在未来一到三年留下固定成本。",
+  };
+}
+
+function normalizeAIPlayers(players: GameState["aiPlayers"] | undefined, seed: number) {
+  const fallback = createAIPlayers(seed);
+  return (players?.length ? players : fallback).map((player, index) => {
+    const base = fallback[index % fallback.length];
+    return {
+      ...base,
+      ...player,
+      personality: player.personality ?? base.personality,
+      boundary: player.boundary ?? base.boundary,
+      monthlyIncome: player.monthlyIncome ?? base.monthlyIncome,
+      debt: player.debt ?? base.debt,
+      trust: player.trust ?? player.relationship ?? base.trust,
+      memories: [...(player.memories ?? ["第一次同桌"])],
+    };
+  });
+}
+
+export function upgradeGameState(input: GameState | Record<string, unknown>): GameState | null {
+  const legacy = input as unknown as GameState;
+  if (!legacy?.world || !legacy.roleId) return null;
+  const upgraded = {
+    ...legacy,
+    version: 2,
+    yearPhase: legacy.yearPhase ?? "opening",
+    plan: [...(legacy.plan ?? [])],
+    reveals: [...(legacy.reveals ?? [])],
+    revealIndex: legacy.revealIndex ?? 0,
+    consequenceScene: legacy.consequenceScene ?? null,
+    chapterSummary: legacy.chapterSummary ?? null,
+    delayedConsequences: [...(legacy.delayedConsequences ?? [])],
+    unlockedRoutes: [...(legacy.unlockedRoutes ?? [])],
+    quests: (legacy.quests?.length ? legacy.quests : createDefaultQuests()).map((quest) => ({ ...quest })),
+    chainProgress: { ...(legacy.chainProgress ?? {}) },
+    aiPlayers: normalizeAIPlayers(legacy.aiPlayers, legacy.world.seed),
+  } as GameState;
+  upgraded.annualBriefing = legacy.annualBriefing ?? createAnnualBriefing(upgraded);
+  return upgraded;
+}
+
 export function createGame(config: NewGameConfig): GameState {
   const seed = Math.abs(config.seed ?? Math.floor(Date.now() % 2_147_483_647));
   const mode = MODES.find((item) => item.id === config.mode) ?? MODES[0];
@@ -226,9 +397,10 @@ export function createGame(config: NewGameConfig): GameState {
   const skills: Record<string, number> = {};
   for (const skill of role.starterSkills) skills[skill] = 1;
 
-  return {
-    version: 1,
+  const game: GameState = {
+    version: 2,
     phase: "playing",
+    yearPhase: "opening",
     mode: mode.id,
     theme: config.theme,
     roleId: role.id,
@@ -256,6 +428,16 @@ export function createGame(config: NewGameConfig): GameState {
     talents: createTalents(seed),
     memory: { 开局: 1 },
     revealedKnowledge: ["现金流"],
+    annualBriefing: {} as AnnualBriefing,
+    plan: [],
+    reveals: [],
+    revealIndex: 0,
+    consequenceScene: null,
+    chapterSummary: null,
+    delayedConsequences: [],
+    unlockedRoutes: [],
+    quests: createDefaultQuests(),
+    chainProgress: {},
     pendingEvent: null,
     lastCard: {
       eyebrow: "世界生成完成",
@@ -279,6 +461,8 @@ export function createGame(config: NewGameConfig): GameState {
     rngStep: 200,
     savedAt: Date.now(),
   };
+  game.annualBriefing = createAnnualBriefing(game);
+  return game;
 }
 
 export function getNetWorth(state: GameState): number {
@@ -746,15 +930,683 @@ export function resolveOpportunity(state: GameState, card: OpportunityCard): Act
   return { state: next, success: true, message: outcome };
 }
 
+export const AI_INTERACTIONS = [
+  {
+    id: "request_help",
+    label: "请求一次具体帮助",
+    description: "说明目标、已有准备与希望对方提供的具体资源，对方会按信任与边界决定。",
+    timeCost: 2,
+    cashCost: 0,
+  },
+  {
+    id: "offer_help",
+    label: "先提供可靠帮助",
+    description: "不立即索取回报，用一次真实交付建立长期互惠记忆。",
+    timeCost: 2,
+    cashCost: 1_500,
+  },
+  {
+    id: "joint_project",
+    label: "提议联合项目",
+    description: "共同出资、明确分工和退出机制，收益与冲突都会进入长期记忆。",
+    timeCost: 3,
+    cashCost: 6_000,
+  },
+  {
+    id: "negotiate",
+    label: "重谈合作条件",
+    description: "把利益、底线和替代方案摆到桌面，避免模糊承诺继续累积。",
+    timeCost: 1,
+    cashCost: 500,
+  },
+] as const;
+
+function getPlannedTime(state: GameState): number {
+  return state.plan.reduce((sum, item) => sum + item.timeCost, 0);
+}
+
+function getPlannedCash(state: GameState): number {
+  return state.plan.reduce((sum, item) => sum + item.cashCost, 0);
+}
+
+function schedulePlanItem(state: GameState, item: Omit<PlannedAction, "id">): ActionResult {
+  if (state.pendingEvent) {
+    return { state, success: false, message: "先处理年度开场事件，再安排计划。" };
+  }
+  if (state.yearPhase !== "planning") {
+    return { state, success: false, message: "当前不是年度计划阶段。" };
+  }
+  if (state.plan.some((planned) => planned.kind === item.kind && planned.targetId === item.targetId && planned.targetPlayerId === item.targetPlayerId)) {
+    return { state, success: false, message: "这项安排已经在年度计划中。" };
+  }
+  if (getPlannedTime(state) + item.timeCost > 8) {
+    return { state, success: false, message: "年度时间预算不足，请先移除一项安排。" };
+  }
+  if (getPlannedCash(state) + item.cashCost > state.cash) {
+    return { state, success: false, message: "计划中的现金支出已经超过当前可用现金。" };
+  }
+  const next = copyState(state);
+  next.plan.push({
+    ...item,
+    id: `plan-${next.turn}-${next.plan.length + 1}-${item.kind}-${item.targetId}`,
+  });
+  next.savedAt = Date.now();
+  return { state: next, success: true, message: `已把「${item.label}」放入第 ${state.turn} 年计划。` };
+}
+
+export function beginYearPlanning(state: GameState): ActionResult {
+  if (state.pendingEvent) {
+    return { state, success: false, message: "先回应年度开场事件。" };
+  }
+  if (state.yearPhase !== "opening") {
+    return { state, success: false, message: "今年已经进入计划或结算流程。" };
+  }
+  const next = copyState(state);
+  next.yearPhase = "planning";
+  next.plan = [createCorePlan(next)];
+  next.reveals = [];
+  next.revealIndex = 0;
+  next.consequenceScene = null;
+  next.lastCard = {
+    eyebrow: `${getChapterName(next.turn)} · 年度计划`,
+    title: "先把时间放到真正重要的承诺上",
+    narrative: "主业已经占用 4 点基础时间。剩余时间可以投入学习、关系、家庭、投资或一次自由机会；所有安排会在确认后一起揭晓。",
+    tags: ["同时规划", "时间预算", "机会成本"],
+  };
+  return { state: next, success: true, message: "年度计划桌已展开。" };
+}
+
+export function removePlannedAction(state: GameState, planId: string): ActionResult {
+  if (state.yearPhase !== "planning") {
+    return { state, success: false, message: "只有计划阶段可以调整安排。" };
+  }
+  const item = state.plan.find((planned) => planned.id === planId);
+  if (!item || item.kind === "core") {
+    return { state, success: false, message: "主业时间是本年度的基础承诺，不能直接移除。" };
+  }
+  const next = copyState(state);
+  next.plan = next.plan.filter((planned) => planned.id !== planId);
+  return { state: next, success: true, message: `已移除「${item.label}」。` };
+}
+
+export function scheduleSkill(state: GameState, skillId: string): ActionResult {
+  const skill = SKILLS.find((item) => item.id === skillId);
+  if (!skill) return { state, success: false, message: "未找到这项技能。" };
+  return schedulePlanItem(state, {
+    kind: "skill",
+    targetId: skill.id,
+    label: `学习 · ${skill.name}`,
+    category: "学习",
+    timeCost: skill.timeCost,
+    cashCost: skill.cost,
+  });
+}
+
+export function scheduleCareer(state: GameState, careerId: string): ActionResult {
+  const career = CAREERS.find((item) => item.id === careerId);
+  if (!career) return { state, success: false, message: "未找到这条职业路线。" };
+  if (state.currentCareerId === career.id) {
+    return { state, success: false, message: "这已经是你的当前职业。" };
+  }
+  return schedulePlanItem(state, {
+    kind: "career",
+    targetId: career.id,
+    label: `职业转型 · ${career.name}`,
+    category: "职业",
+    timeCost: 4,
+    cashCost: career.entryCost,
+  });
+}
+
+export function scheduleAsset(state: GameState, assetId: string): ActionResult {
+  const asset = ASSETS.find((item) => item.id === assetId);
+  if (!asset) return { state, success: false, message: "未找到这项资产。" };
+  return schedulePlanItem(state, {
+    kind: "asset",
+    targetId: asset.id,
+    label: `配置资产 · ${asset.name}`,
+    category: "投资",
+    timeCost: asset.category === "房产" || asset.category === "企业股权" ? 3 : 1,
+    cashCost: asset.minimum,
+  });
+}
+
+export function scheduleLifeAction(state: GameState, actionId: string): ActionResult {
+  const action = LIFE_ACTIONS.find((item) => item.id === actionId);
+  if (!action) return { state, success: false, message: "未找到这项行动。" };
+  return schedulePlanItem(state, {
+    kind: "life",
+    targetId: action.id,
+    label: action.name,
+    category: action.category,
+    timeCost: action.points,
+    cashCost: action.cashCost,
+  });
+}
+
+export function scheduleOpportunity(state: GameState, card: OpportunityCard): ActionResult {
+  const plannedOpportunities = state.plan.filter((item) => item.kind === "opportunity").length;
+  if (plannedOpportunities >= state.opportunityTokens) {
+    return { state, success: false, message: "本局剩余自由机会不足。" };
+  }
+  return schedulePlanItem(state, {
+    kind: "opportunity",
+    targetId: card.id,
+    label: `自由机会 · ${card.title}`,
+    category: "机会",
+    timeCost: card.timeCost,
+    cashCost: card.cashCost,
+    payload: card,
+  });
+}
+
+export function scheduleAIInteraction(
+  state: GameState,
+  playerId: string,
+  interactionId: string,
+): ActionResult {
+  const player = state.aiPlayers.find((item) => item.id === playerId);
+  const interaction = AI_INTERACTIONS.find((item) => item.id === interactionId);
+  if (!player || !interaction) {
+    return { state, success: false, message: "未找到这位角色或互动方式。" };
+  }
+  return schedulePlanItem(state, {
+    kind: "social",
+    targetId: interaction.id,
+    targetPlayerId: player.id,
+    label: `${interaction.label} · ${player.name}`,
+    category: "关系",
+    timeCost: interaction.timeCost,
+    cashCost: interaction.cashCost,
+  });
+}
+
+function resolveCorePlan(state: GameState): ActionResult {
+  let next = applyEffects(state, { energy: -6, stress: 2 });
+  next.actionPoints = Math.max(0, next.actionPoints - 4);
+  next = addMemory(next, ["履行主业", "稳定交付"]);
+  const outcome = "你完成了本年度的基础工作承诺，主动收入资格与职业信用被保留。";
+  next = finalizeActionCard(
+    next,
+    null,
+    "年度计划 · 主业",
+    "先守住正在承担的责任",
+    "主业占用四点时间，也提供现金流、社会连接与职业样本。它不是背景数字，而是你主动保留的一条路线。",
+    ["主业", "现金流", "信用"],
+    outcome,
+  );
+  next = addHistory(next, {
+    type: "action",
+    title: "履行主业",
+    description: outcome,
+    tags: ["主业", "信用"],
+  });
+  return { state: next, success: true, message: outcome };
+}
+
+function resolveSocialPlan(state: GameState, item: PlannedAction): ActionResult {
+  const playerIndex = state.aiPlayers.findIndex((player) => player.id === item.targetPlayerId);
+  const interaction = AI_INTERACTIONS.find((candidate) => candidate.id === item.targetId);
+  if (playerIndex < 0 || !interaction) {
+    return { state, success: false, message: "互动对象已经离开当前关系网络。" };
+  }
+  const player = state.aiPlayers[playerIndex];
+  const base =
+    interaction.id === "offer_help"
+      ? 0.9
+      : interaction.id === "joint_project"
+        ? 0.42 + player.trust / 400
+        : 0.5 + player.trust / 350;
+  const [snapshot, rolled] = probabilitySnapshot(
+    state,
+    `${player.name}：${interaction.label}`,
+    base,
+    ["communication", "negotiation"],
+    state.energy / 100,
+  );
+  let next = applyEffects(rolled, {
+    cash: -interaction.cashCost,
+    energy: -interaction.timeCost * 2,
+    relationship: snapshot.success ? 3 : -1,
+    monthlyIncome:
+      snapshot.success && (interaction.id === "request_help" || interaction.id === "joint_project")
+        ? interaction.id === "joint_project"
+          ? 650
+          : 250
+        : 0,
+    credit: snapshot.success ? 1 : 0,
+  });
+  next.actionPoints -= interaction.timeCost;
+  const target = next.aiPlayers[playerIndex];
+  const trustDelta =
+    interaction.id === "offer_help"
+      ? 9
+      : interaction.id === "negotiate"
+        ? snapshot.success
+          ? 5
+          : -2
+        : snapshot.success
+          ? 6
+          : -4;
+  target.trust = clamp(target.trust + trustDelta, 0, 100);
+  target.relationship = clamp(target.relationship + trustDelta, 0, 100);
+  target.memories.push(
+    snapshot.success
+      ? `第${state.turn}年：${interaction.label}达成`
+      : `第${state.turn}年：${interaction.label}未达成`,
+  );
+  target.currentMove = snapshot.success
+    ? `与你继续推进「${interaction.label}」`
+    : `重新评估与你的合作边界`;
+  next = addKnowledge(next, ["关系复利", "合同", "信用"]);
+  next = addMemory(next, [
+    snapshot.success ? "建立可信互动" : "关系谈判受挫",
+    `同桌:${target.id}`,
+  ]);
+  const outcome = snapshot.success
+    ? `${player.name}接受了你的提议。信任变化 ${trustDelta >= 0 ? "+" : ""}${trustDelta}，这段互动会影响未来介绍、借款与联合项目。`
+    : `${player.name}拒绝了这次提议，并明确了底线：“${player.boundary}”`;
+  next = finalizeActionCard(
+    next,
+    snapshot,
+    "人物互动 · 已回应",
+    `${player.name}回应了你的提议`,
+    `${player.personality}。角色不是固定增益按钮，会依据目标、信任、资源与边界作出独立判断。`,
+    ["关系", player.archetype, interaction.label],
+    outcome,
+  );
+  next = addHistory(next, {
+    type: "action",
+    title: `${interaction.label} · ${player.name}`,
+    description: outcome,
+    cashDelta: -interaction.cashCost,
+    tags: ["关系", "AI角色", interaction.id],
+  });
+  return { state: next, success: true, message: outcome };
+}
+
+function statChanges(before: GameState, after: GameState): YearReveal["statChanges"] {
+  return [
+    ["现金", after.cash - before.cash],
+    ["月收入", after.monthlyIncome - before.monthlyIncome],
+    ["健康", after.health - before.health],
+    ["精力", after.energy - before.energy],
+    ["幸福", after.happiness - before.happiness],
+    ["关系", after.relationship - before.relationship],
+  ]
+    .filter(([, value]) => Math.abs(value as number) >= 0.01)
+    .map(([label, value]) => ({ label: label as string, value: value as number }));
+}
+
+function createReveal(
+  before: GameState,
+  after: GameState,
+  item: PlannedAction,
+  index: number,
+  actionAccepted: boolean,
+): YearReveal {
+  const audit = after.audits.length > before.audits.length ? after.audits.at(-1) : undefined;
+  const history = after.history.at(-1);
+  return {
+    id: `reveal-${after.turn}-${index + 1}`,
+    eyebrow: after.lastCard.eyebrow,
+    title: after.lastCard.title || item.label,
+    narrative: after.lastCard.narrative,
+    outcome: actionAccepted
+      ? after.lastCard.outcome ?? history?.description ?? "这项安排已经完成。"
+      : `计划执行时发现资源条件不再满足，「${item.label}」被迫取消。`,
+    success: actionAccepted && (audit?.success ?? true),
+    cashDelta: after.cash - before.cash,
+    statChanges: statChanges(before, after),
+    auditId: audit?.id,
+    probability: audit?.finalProbability,
+    tags: [...after.lastCard.tags],
+  };
+}
+
+function updateQuestProgress(state: GameState): GameState {
+  const next = copyState(state);
+  const maxTrust = Math.max(0, ...next.aiPlayers.map((player) => player.trust));
+  const learningCount =
+    (next.memory["持续学习"] ?? 0) +
+    (next.memory["开放想法:learning"] ?? 0);
+  next.quests = next.quests.map((quest) => {
+    const progress =
+      quest.id === "reserve"
+        ? getEmergencyMonths(next)
+        : quest.id === "learning"
+          ? learningCount
+          : maxTrust;
+    const complete = progress >= quest.target;
+    if (complete && quest.status !== "complete" && !next.unlockedRoutes.includes(quest.rewardRoute)) {
+      next.unlockedRoutes.push(quest.rewardRoute);
+    }
+    return { ...quest, progress, status: complete ? "complete" : quest.status };
+  });
+  return next;
+}
+
+function attachDelayedConsequences(
+  state: GameState,
+  plan: PlannedAction[],
+  reveals: YearReveal[],
+): GameState {
+  const next = copyState(state);
+  plan.forEach((item, index) => {
+    const reveal = reveals[index];
+    if (!reveal) return;
+    if (item.kind === "career" || item.kind === "opportunity" || item.kind === "social") {
+      const delayed: DelayedConsequence = {
+        id: `delay-${next.turn}-${item.id}`,
+        dueTurn: next.turn + (item.kind === "career" ? 1 : 2),
+        title:
+          item.kind === "career"
+            ? "新路线的适应成本"
+            : item.kind === "social"
+              ? "合作承诺的回声"
+              : "试验样本的二次结果",
+        description: reveal.success
+          ? `「${item.label}」的早期结果将继续接受交付、关系和环境检验。`
+          : `「${item.label}」留下的成本和经验将在未来重新出现。`,
+        effects: reveal.success
+          ? item.kind === "social"
+            ? { relationship: 3, credit: 1 }
+            : { happiness: 2, credit: 1 }
+          : { stress: 3, cash: -Math.min(4_000, Math.round(item.cashCost * 0.15)) },
+        status: "pending",
+        sourceTag: item.category,
+      };
+      next.delayedConsequences.push(delayed);
+    }
+  });
+  return next;
+}
+
+function createConsequenceScene(state: GameState): ConsequenceScene {
+  const strongest = [...state.reveals].sort(
+    (a, b) =>
+      Math.abs(b.cashDelta) +
+      b.statChanges.reduce((sum, item) => sum + Math.abs(item.value) * 200, 0) -
+      (Math.abs(a.cashDelta) +
+        a.statChanges.reduce((sum, item) => sum + Math.abs(item.value) * 200, 0)),
+  )[0];
+  const player = [...state.aiPlayers].sort((a, b) => b.trust - a.trust)[0];
+  const newlyUnlocked = state.quests
+    .filter((quest) => quest.status === "complete" && state.unlockedRoutes.includes(quest.rewardRoute))
+    .map((quest) => quest.rewardRoute);
+  const delayed = state.delayedConsequences
+    .filter((item) => item.status === "pending" && item.dueTurn > state.turn)
+    .slice(-2)
+    .map((item) => `第 ${item.dueTurn} 年：${item.title}`);
+  return {
+    speaker: player?.name ?? "城市观察员",
+    role: player?.archetype ?? "旁观者",
+    title: strongest?.success ? "这一年留下了可以继续使用的东西" : "这一年没有白过，但代价必须被记住",
+    narrative: strongest
+      ? `「${strongest.title}」成为今年最明显的转折。${strongest.outcome}`
+      : "你守住了基础承诺，没有额外下注。选择权被保留，但成长速度也因此放缓。",
+    reaction: player
+      ? `“我记住了你今年的做法。${player.trust >= 65 ? "下次有合适的机会，我愿意先来问你。" : "我们还需要更多真实合作，才能谈更大的承诺。"}”`
+      : "城市没有给出标准答案，但你的资源边界已经发生变化。",
+    unlocked: [...new Set(newlyUnlocked)].slice(-3),
+    delayed,
+  };
+}
+
+function executePlannedAction(state: GameState, item: PlannedAction): ActionResult {
+  if (item.kind === "core") return resolveCorePlan(state);
+  if (item.kind === "skill") return learnSkill(state, item.targetId);
+  if (item.kind === "career") return switchCareer(state, item.targetId);
+  if (item.kind === "asset") return buyAsset(state, item.targetId);
+  if (item.kind === "life") return takeLifeAction(state, item.targetId);
+  if (item.kind === "opportunity" && item.payload) return resolveOpportunity(state, item.payload);
+  if (item.kind === "social") return resolveSocialPlan(state, item);
+  return { state, success: false, message: "这项计划缺少可执行的规则映射。" };
+}
+
+export function commitYearPlan(state: GameState): ActionResult {
+  if (state.yearPhase !== "planning") {
+    return { state, success: false, message: "只有计划阶段可以确认年度安排。" };
+  }
+  if (!state.plan.some((item) => item.kind !== "core")) {
+    return { state, success: false, message: "至少安排一项主业之外的行动，或者主动选择休整。" };
+  }
+  const plan = state.plan.map((item) => ({
+    ...item,
+    payload: item.payload ? { ...item.payload } : undefined,
+  }));
+  let working = copyState(state);
+  working.plan = [];
+  working.actionPoints = 8;
+  const reveals: YearReveal[] = [];
+  plan.forEach((item, index) => {
+    const before = copyState(working);
+    const result = executePlannedAction(working, item);
+    working = result.state;
+    reveals.push(createReveal(before, working, item, index, result.success));
+  });
+  working = updateQuestProgress(working);
+  working = attachDelayedConsequences(working, plan, reveals);
+  working.reveals = reveals;
+  working.revealIndex = 0;
+  working.yearPhase = "reveal";
+  working.consequenceScene = null;
+  if (reveals[0]) {
+    working.lastCard = {
+      eyebrow: reveals[0].eyebrow,
+      title: reveals[0].title,
+      narrative: reveals[0].narrative,
+      outcome: reveals[0].outcome,
+      tags: [...reveals[0].tags],
+    };
+  }
+  working.savedAt = Date.now();
+  return {
+    state: working,
+    success: true,
+    message: `第 ${working.turn} 年计划已锁定，正在依次揭晓 ${reveals.length} 项结果。`,
+  };
+}
+
+function enterConsequencePhase(state: GameState): GameState {
+  const next = copyState(state);
+  next.yearPhase = "consequence";
+  next.consequenceScene = createConsequenceScene(next);
+  next.lastCard = {
+    eyebrow: `${getChapterName(next.turn)} · 年度后果`,
+    title: next.consequenceScene.title,
+    narrative: next.consequenceScene.narrative,
+    outcome: next.consequenceScene.reaction,
+    tags: ["人物回应", "延迟后果", ...next.consequenceScene.unlocked],
+  };
+  return next;
+}
+
+export function revealNextResult(state: GameState): ActionResult {
+  if (state.yearPhase !== "reveal") {
+    return { state, success: false, message: "当前没有等待揭晓的结果。" };
+  }
+  if (state.revealIndex >= state.reveals.length - 1) {
+    return { state: enterConsequencePhase(state), success: true, message: "所有结果已揭晓，进入年度后果场景。" };
+  }
+  const next = copyState(state);
+  next.revealIndex += 1;
+  const reveal = next.reveals[next.revealIndex];
+  next.lastCard = {
+    eyebrow: reveal.eyebrow,
+    title: reveal.title,
+    narrative: reveal.narrative,
+    outcome: reveal.outcome,
+    tags: [...reveal.tags],
+  };
+  return { state: next, success: true, message: `正在揭晓 ${next.revealIndex + 1}/${next.reveals.length}` };
+}
+
+export function skipYearReveals(state: GameState): ActionResult {
+  if (state.yearPhase !== "reveal") {
+    return { state, success: false, message: "当前没有可跳过的揭晓过程。" };
+  }
+  return { state: enterConsequencePhase(state), success: true, message: "已快速汇总全部结果。" };
+}
+
+export function continueAfterChapter(state: GameState): ActionResult {
+  if (state.yearPhase !== "chapter") {
+    return { state, success: false, message: "当前没有等待确认的章节总结。" };
+  }
+  const next = copyState(state);
+  next.yearPhase = "opening";
+  next.chapterSummary = null;
+  next.annualBriefing = createAnnualBriefing(next);
+  next.lastCard = {
+    eyebrow: `${getChapterName(next.turn)} · 年度开场`,
+    title: next.annualBriefing.headline,
+    narrative: next.annualBriefing.cityNews,
+    outcome: next.annualBriefing.riskNote,
+    tags: [next.annualBriefing.chapter, next.world.cycle, "城市新闻"],
+  };
+  return { state: next, success: true, message: `进入第 ${next.turn} 年。` };
+}
+
+function createCareerShockChainEvent(turn: number): EventDefinition | null {
+  if (turn === 3) {
+    return {
+      id: "chain_layoff_1",
+      type: "行业",
+      title: "走廊里的收缩信号",
+      narrative: "预算审批变慢、外包暂停、几位资深同事开始更新履历。名单还没有出现，但你拥有一整年准备窗口。",
+      weight: 99,
+      choices: [
+        {
+          id: "prepare_skill",
+          label: "提前补技能并整理成果",
+          description: "花钱和时间建立外部可验证的能力证据。",
+          cost: 4_000,
+          timeCost: 2,
+          risk: "低",
+          effects: { cash: -4_000, energy: -4 },
+          successEffects: { credit: 2 },
+          baseProbability: 0.82,
+          knowledgeTags: ["职业韧性", "人力资本"],
+          memoryTags: ["裁员链:技能准备", "公司收缩信号"],
+        },
+        {
+          id: "prepare_reserve",
+          label: "先把应急金补厚",
+          description: "不猜名单，把选择权放在流动性上。",
+          risk: "低",
+          effects: { happiness: -1, stress: -2 },
+          successEffects: { cash: 6_000 },
+          baseProbability: 0.9,
+          knowledgeTags: ["应急金", "机会成本"],
+          memoryTags: ["裁员链:现金准备", "公司收缩信号"],
+        },
+      ],
+    };
+  }
+  if (turn === 4) {
+    return {
+      id: "chain_layoff_2",
+      type: "职业",
+      title: "裁员名单出现",
+      narrative: "你的团队被要求缩减岗位。过去一年的技能、现金和关系准备，不再是抽象数值。",
+      weight: 99,
+      choices: [
+        {
+          id: "internal_transfer",
+          label: "争取内部转岗",
+          description: "用成果、技能证据和内部信用争取留下。",
+          cost: 2_000,
+          timeCost: 2,
+          risk: "中",
+          effects: { cash: -2_000, stress: 4 },
+          successEffects: { monthlyIncome: 500, credit: 3 },
+          failureEffects: { monthlyIncome: -1_200, happiness: -3 },
+          baseProbability: 0.42,
+          knowledgeTags: ["职业韧性", "信用"],
+          memoryTags: ["裁员链:内部转岗"],
+        },
+        {
+          id: "take_package",
+          label: "接受补偿，主动寻找外部机会",
+          description: "获得缓冲，但空窗期会检验应急金与关系网络。",
+          risk: "中",
+          effects: { cash: 22_000, stress: 5 },
+          successEffects: { happiness: 2 },
+          failureEffects: { monthlyIncome: -1_500 },
+          baseProbability: 0.55,
+          knowledgeTags: ["应急金", "职业转型"],
+          memoryTags: ["裁员链:接受补偿"],
+        },
+        {
+          id: "joint_venture",
+          label: "与可信关系联合试业",
+          description: "把过往合作信用转换成小规模联合项目。",
+          cost: 8_000,
+          timeCost: 3,
+          risk: "高",
+          effects: { cash: -8_000, stress: 6 },
+          successEffects: { monthlyIncome: 900, relationship: 4 },
+          failureEffects: { relationship: -3 },
+          baseProbability: 0.36,
+          knowledgeTags: ["低成本试错", "合伙治理"],
+          memoryTags: ["裁员链:联合试业"],
+        },
+      ],
+    };
+  }
+  if (turn === 5) {
+    return {
+      id: "chain_layoff_3",
+      type: "机会",
+      title: "两年前准备的答案",
+      narrative: "行业仍未完全恢复。招聘方、合作伙伴和家庭开始用你过去两年的真实准备来决定是否支持下一步。",
+      weight: 99,
+      choices: [
+        {
+          id: "use_preparation",
+          label: "拿出过去两年的准备",
+          description: "让技能证据、现金缓冲与关系信用共同参与裁决。",
+          risk: "中",
+          effects: { stress: -2 },
+          successEffects: { monthlyIncome: 1_600, credit: 4, happiness: 4 },
+          failureEffects: { cash: -4_000, happiness: -2 },
+          baseProbability: 0.38,
+          knowledgeTags: ["职业韧性", "复利", "关系复利"],
+          memoryTags: ["裁员链:准备兑现"],
+        },
+        {
+          id: "reset_path",
+          label: "缩小目标，重新建立样本",
+          description: "接受短期降级，用更低风险的路径重建现金流。",
+          risk: "低",
+          effects: { monthlyIncome: -500, stress: -4 },
+          successEffects: { credit: 2, happiness: 2 },
+          baseProbability: 0.78,
+          knowledgeTags: ["低成本试错", "现金流"],
+          memoryTags: ["裁员链:重新起步"],
+        },
+      ],
+    };
+  }
+  return null;
+}
+
 function eventEligible(state: GameState, event: (typeof EVENTS)[number]): boolean {
-  if ((event.minTurn ?? 1) > state.turn + 1) return false;
-  if (event.maxTurn && event.maxTurn < state.turn + 1) return false;
+  if ((event.minTurn ?? 1) > state.turn) return false;
+  if (event.maxTurn && event.maxTurn < state.turn) return false;
   if (event.requiredTags?.some((tag) => !state.memory[tag])) return false;
   if (event.blockedTags?.some((tag) => state.memory[tag])) return false;
   return true;
 }
 
 function chooseEvent(state: GameState): [GameState["pendingEvent"], GameState] {
+  const chainEvent =
+    state.turn >= 3 &&
+    state.turn <= 5 &&
+    (state.turn === 3 || (state.chainProgress.careerShock ?? 0) === state.turn - 3)
+      ? createCareerShockChainEvent(state.turn)
+      : null;
+  if (chainEvent) return [{ event: chainEvent, source: "chain" }, state];
   const candidates = EVENTS.filter((event) => eventEligible(state, event));
   const totalWeight = candidates.reduce((sum, event) => sum + event.weight, 0);
   const [roll, rolled] = nextRoll(state);
@@ -843,8 +1695,12 @@ function simulateAIMoves(state: GameState): GameState {
 export function advanceTurn(state: GameState): ActionResult {
   if (state.pendingEvent) return { state, success: false, message: "请先处理当前事件卡。" };
   if (state.phase === "review") return { state, success: false, message: "本局已经进入复盘。" };
+  if (state.yearPhase !== "consequence") {
+    return { state, success: false, message: "先完成年度计划、结果揭晓与后果场景。" };
+  }
 
   let next = updateWorld(state);
+  const completedYear = next.turn;
   const annualActiveCash = next.monthlyIncome * 12;
   const annualExpense = (next.fixedExpense + next.variableExpense) * 12;
   const debtInterest = next.debt * (next.world.interestRate + 0.025);
@@ -881,18 +1737,94 @@ export function advanceTurn(state: GameState): ActionResult {
 
   next.turn += 1;
   next.actionPoints = 8;
+  next.plan = [];
+  next.reveals = [];
+  next.revealIndex = 0;
+  next.consequenceScene = null;
   next.variableExpense = Math.round(next.variableExpense * (1 + next.world.inflation));
+  const dueConsequences = next.delayedConsequences.filter(
+    (item) => item.status === "pending" && item.dueTurn <= next.turn,
+  );
+  for (const consequence of dueConsequences) {
+    next = applyEffects(next, consequence.effects);
+    next = addHistory(next, {
+      type: "system",
+      title: `延迟后果：${consequence.title}`,
+      description: consequence.description,
+      cashDelta: consequence.effects.cash,
+      tags: ["延迟后果", consequence.sourceTag],
+    });
+    const stored = next.delayedConsequences.find((item) => item.id === consequence.id);
+    if (stored) stored.status = "resolved";
+  }
   const [pendingEvent, rolled] = chooseEvent(next);
   next = rolled;
   next.pendingEvent = pendingEvent;
-  next.lastCard = {
-    eyebrow: `${pendingEvent?.event.type ?? "人生"}事件 · 等待选择`,
-    title: pendingEvent?.event.title ?? "新的一年",
-    narrative: pendingEvent?.event.narrative ?? "世界继续变化。",
-    tags: [pendingEvent?.event.type ?? "事件", next.world.cycle],
-  };
+  next.annualBriefing = createAnnualBriefing(next);
+  if (completedYear % 3 === 0) {
+    const recent = next.history.filter(
+      (entry) => entry.turn >= Math.max(1, completedYear - 2) && entry.turn <= completedYear,
+    );
+    const chapterIndex = Math.ceil(completedYear / 3);
+    const highlights = recent
+      .filter((entry) => entry.type === "action" || entry.type === "event")
+      .slice(-4)
+      .map((entry) => `${entry.title}：${entry.description}`);
+    const resilience = Math.round(
+      clamp(
+        getEmergencyMonths(next) * 8 +
+          next.health * 0.2 +
+          next.credit * 0.18 +
+          Math.max(0, ...next.aiPlayers.map((player) => player.trust)) * 0.12,
+        0,
+        100,
+      ),
+    );
+    const chapter: ChapterSummary = {
+      index: chapterIndex,
+      title: CHAPTER_NAMES[Math.min(CHAPTER_NAMES.length - 1, chapterIndex - 1)],
+      years: `第 ${completedYear - 2}–${completedYear} 年`,
+      headline:
+        resilience >= 72
+          ? "你开始拥有穿越变化的选择权"
+          : resilience >= 48
+            ? "几次取舍正在形成稳定的个人方法"
+            : "增长发生了，但底盘仍会放大下一次冲击",
+      highlights: highlights.length
+        ? highlights
+        : ["你守住了基础承诺，也保留了下一阶段重新选择的空间。"],
+      unlockedRoutes: [...next.unlockedRoutes],
+      resilience,
+    };
+    next.yearPhase = "chapter";
+    next.chapterSummary = chapter;
+    next.lastCard = {
+      eyebrow: `章节 ${String(chapter.index).padStart(2, "0")} · ${chapter.years}`,
+      title: chapter.headline,
+      narrative: `这三年不只改变了净资产，也改变了你的能力证据、关系信用、健康资本与风险承受力。章节韧性评分 ${chapter.resilience}。`,
+      outcome: chapter.highlights[0],
+      tags: [chapter.title, "三年章节", ...chapter.unlockedRoutes.slice(-2)],
+    };
+  } else {
+    next.yearPhase = "opening";
+    next.chapterSummary = null;
+    next.lastCard = {
+      eyebrow: `${next.annualBriefing.chapter} · 年度开场`,
+      title: next.annualBriefing.headline,
+      narrative: next.annualBriefing.cityNews,
+      outcome: next.annualBriefing.riskNote,
+      tags: [next.annualBriefing.chapter, next.world.cycle, "城市新闻"],
+    };
+  }
   next.savedAt = Date.now();
-  return { state: next, success: true, message: "新的一年开始，请处理当前事件。" };
+  return {
+    state: next,
+    success: true,
+    message:
+      next.yearPhase === "chapter"
+        ? `完成${next.chapterSummary?.title ?? "三年章节"}，请查看章节总结。`
+        : "新的一年开始，请先阅读城市与人物消息。",
+  };
 }
 
 export function resolvePendingEvent(state: GameState, choiceId: string): ActionResult {
@@ -900,7 +1832,15 @@ export function resolvePendingEvent(state: GameState, choiceId: string): ActionR
   if (!pending) return { state, success: false, message: "当前没有等待处理的事件。" };
   const choice = pending.event.choices.find((item) => item.id === choiceId);
   if (!choice) return { state, success: false, message: "未找到这个事件选择。" };
-  const base = choice.baseProbability ?? 1;
+  let base = choice.baseProbability ?? 1;
+  if (pending.source === "chain") {
+    const preparation =
+      (state.memory["裁员链:技能准备"] ? 0.12 : 0) +
+      (state.memory["裁员链:现金准备"] ? 0.1 : 0) +
+      (getEmergencyMonths(state) >= 6 ? 0.08 : 0) +
+      (Math.max(0, ...state.aiPlayers.map((player) => player.trust)) >= 68 ? 0.06 : 0);
+    base = clamp(base + preparation, 0.08, 0.94);
+  }
   const resourceAdequacy =
     choice.cost && choice.cost > 0 ? clamp(state.cash / choice.cost / 2, 0, 1) : state.energy / 100;
   const [snapshot, rolled] = probabilitySnapshot(
@@ -913,6 +1853,12 @@ export function resolvePendingEvent(state: GameState, choiceId: string): ActionR
   let next = applyEffects(rolled, choice.effects);
   next = applyEffects(next, snapshot.success ? choice.successEffects ?? {} : choice.failureEffects ?? {});
   next.pendingEvent = null;
+  if (pending.source === "chain") {
+    next.chainProgress.careerShock = Math.max(
+      next.chainProgress.careerShock ?? 0,
+      Number(pending.event.id.at(-1) ?? 0),
+    );
+  }
   next = addKnowledge(next, choice.knowledgeTags);
   next = addMemory(next, [...choice.memoryTags, `事件:${pending.event.type}`]);
   const outcome = snapshot.success

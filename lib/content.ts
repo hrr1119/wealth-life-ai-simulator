@@ -444,10 +444,26 @@ export function createAIPlayers(seed: number): AIPlayer[] {
       name: item[1] as string,
       archetype: item[2] as string,
       goal: item[3] as string,
+      personality:
+        index === 0
+          ? "谨慎、重承诺，会先确认最坏结果"
+          : index === 1
+            ? "好奇、直接，愿意交换信息与资源"
+            : "目标感强，能合作，也会争夺同一机会",
+      boundary:
+        index === 0
+          ? "不接受没有书面约定的借款与担保"
+          : index === 1
+            ? "不会牺牲健康替别人无限兜底"
+            : "连续两次失信后会终止合作",
       risk: item[4] as number,
       cash: 40_000 + ((seed + index * 7_913) % 55_000),
+      monthlyIncome: 7_000 + Math.round((item[4] as number) * 8_000),
+      debt: Math.max(0, Math.round(((seed + index * 2_311) % 35_000) * (item[4] as number))),
+      trust: 42 + ((seed + index * 29) % 24),
       relationship: 46 + ((seed + index * 17) % 28),
       currentMove: item[5] as string,
+      memories: ["第一次同桌"],
     };
   });
 }

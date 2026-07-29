@@ -1,5 +1,6 @@
 export type ModeId = "quick" | "standard";
 export type ThemeId = "emerald" | "midnight" | "paper" | "terracotta";
+export type YearPhase = "opening" | "planning" | "reveal" | "consequence" | "chapter";
 export type ActionCategory =
   | "career"
   | "learning"
@@ -167,10 +168,16 @@ export interface AIPlayer {
   name: string;
   archetype: string;
   goal: string;
+  personality: string;
+  boundary: string;
   risk: number;
   cash: number;
+  monthlyIncome: number;
+  debt: number;
+  trust: number;
   relationship: number;
   currentMove: string;
+  memories: string[];
 }
 
 export interface WorldState {
@@ -223,9 +230,100 @@ export interface PendingEvent {
   source: "turn" | "chain";
 }
 
+export type PlannedActionKind =
+  | "core"
+  | "skill"
+  | "career"
+  | "asset"
+  | "life"
+  | "opportunity"
+  | "social";
+
+export interface PlannedAction {
+  id: string;
+  kind: PlannedActionKind;
+  targetId: string;
+  label: string;
+  category: string;
+  timeCost: number;
+  cashCost: number;
+  payload?: OpportunityCard;
+  targetPlayerId?: string;
+}
+
+export interface AnnualBriefing {
+  year: number;
+  chapter: string;
+  headline: string;
+  cityNews: string;
+  message: {
+    sender: string;
+    role: string;
+    body: string;
+  };
+  aiSummary: string;
+  routeUpdate: string;
+  riskNote: string;
+}
+
+export interface YearReveal {
+  id: string;
+  eyebrow: string;
+  title: string;
+  narrative: string;
+  outcome: string;
+  success: boolean;
+  cashDelta: number;
+  statChanges: Array<{ label: string; value: number }>;
+  auditId?: string;
+  probability?: number;
+  tags: string[];
+}
+
+export interface ConsequenceScene {
+  speaker: string;
+  role: string;
+  title: string;
+  narrative: string;
+  reaction: string;
+  unlocked: string[];
+  delayed: string[];
+}
+
+export interface ChapterSummary {
+  index: number;
+  title: string;
+  years: string;
+  headline: string;
+  highlights: string[];
+  unlockedRoutes: string[];
+  resilience: number;
+}
+
+export interface DelayedConsequence {
+  id: string;
+  dueTurn: number;
+  title: string;
+  description: string;
+  effects: NumericEffects;
+  status: "pending" | "resolved";
+  sourceTag: string;
+}
+
+export interface QuestState {
+  id: string;
+  title: string;
+  description: string;
+  progress: number;
+  target: number;
+  status: "active" | "complete";
+  rewardRoute: string;
+}
+
 export interface GameState {
-  version: 1;
+  version: 2;
   phase: "playing" | "review";
+  yearPhase: YearPhase;
   mode: ModeId;
   theme: ThemeId;
   roleId: string;
@@ -253,6 +351,16 @@ export interface GameState {
   talents: Record<string, TalentState>;
   memory: Record<string, number>;
   revealedKnowledge: string[];
+  annualBriefing: AnnualBriefing;
+  plan: PlannedAction[];
+  reveals: YearReveal[];
+  revealIndex: number;
+  consequenceScene: ConsequenceScene | null;
+  chapterSummary: ChapterSummary | null;
+  delayedConsequences: DelayedConsequence[];
+  unlockedRoutes: string[];
+  quests: QuestState[];
+  chainProgress: Record<string, number>;
   pendingEvent: PendingEvent | null;
   lastCard: {
     eyebrow: string;

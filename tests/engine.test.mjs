@@ -4,12 +4,20 @@ import test from "node:test";
 import { ASSETS, CAREERS, EVENTS, SKILLS } from "../lib/content.ts";
 import {
   advanceTurn,
+  beginYearPlanning,
   buyAsset,
+  commitYearPlan,
+  continueAfterChapter,
   createGame,
   getNetWorth,
   learnSkill,
+  revealNextResult,
   resolvePendingEvent,
+  scheduleAIInteraction,
+  scheduleLifeAction,
+  scheduleSkill,
   seededRandom,
+  skipYearReveals,
 } from "../lib/engine.ts";
 import { generateOpportunityCards } from "../lib/opportunity.ts";
 
@@ -62,15 +70,65 @@ test("actions consume real resources and add auditable history", () => {
   assert.ok(getNetWorth(assetResult.state) <= getNetWorth(skillResult.state) + 1);
 });
 
+test("annual planning defers action effects until the plan is locked", () => {
+  const initial = createGame({ mode: "quick", theme: "emerald", roleId: "steady", seed: 313131 });
+  const planning = beginYearPlanning(initial);
+  assert.equal(planning.success, true);
+  assert.equal(planning.state.yearPhase, "planning");
+  assert.equal(planning.state.plan[0].kind, "core");
+
+  const scheduled = scheduleSkill(planning.state, "writing");
+  assert.equal(scheduled.success, true);
+  assert.equal(scheduled.state.cash, initial.cash, "scheduling must not spend cash");
+  assert.equal(scheduled.state.skills.writing, initial.skills.writing);
+
+  const committed = commitYearPlan(scheduled.state);
+  assert.equal(committed.success, true);
+  assert.equal(committed.state.yearPhase, "reveal");
+  assert.ok(committed.state.cash < initial.cash);
+  assert.equal(committed.state.reveals.length, 2);
+  assert.equal(committed.state.reveals[0].title, "先守住正在承担的责任");
+});
+
+test("AI tablemates remember interactions and can unlock relationship routes", () => {
+  let state = createGame({ mode: "quick", theme: "paper", roleId: "teacher", seed: 606060 });
+  state = beginYearPlanning(state).state;
+  const player = state.aiPlayers[0];
+  state = scheduleAIInteraction(state, player.id, "offer_help").state;
+  state = commitYearPlan(state).state;
+  const updated = state.aiPlayers.find((item) => item.id === player.id);
+  assert.ok(updated.memories.length > player.memories.length);
+  assert.ok(updated.trust >= player.trust);
+  assert.ok(state.reveals.some((item) => item.tags.includes("AI角色") || item.tags.includes("关系")));
+});
+
 test("a quick game can finish a complete twelve-year loop", () => {
   let state = createGame({ mode: "quick", theme: "emerald", roleId: "teacher", seed: 775533 });
   let guard = 0;
-  while (state.phase !== "review" && guard < 30) {
+  const chainEvents = [];
+  const chapters = [];
+  while (state.phase !== "review" && guard < 120) {
     if (state.pendingEvent) {
+      if (state.pendingEvent.source === "chain") chainEvents.push(state.pendingEvent.event.id);
       const choice = state.pendingEvent.event.choices[0];
       state = resolvePendingEvent(state, choice.id).state;
-    } else {
+    } else if (state.yearPhase === "opening") {
+      state = beginYearPlanning(state).state;
+    } else if (state.yearPhase === "planning") {
+      const scheduled = state.turn === 1
+        ? scheduleAIInteraction(state, state.aiPlayers[0].id, "offer_help")
+        : scheduleLifeAction(state, "rest");
+      assert.equal(scheduled.success, true);
+      state = commitYearPlan(scheduled.state).state;
+    } else if (state.yearPhase === "reveal") {
+      state = state.turn % 2 === 0
+        ? skipYearReveals(state).state
+        : revealNextResult(state).state;
+    } else if (state.yearPhase === "consequence") {
       state = advanceTurn(state).state;
+    } else if (state.yearPhase === "chapter") {
+      chapters.push(state.chapterSummary?.title);
+      state = continueAfterChapter(state).state;
     }
     guard += 1;
   }
@@ -78,4 +136,7 @@ test("a quick game can finish a complete twelve-year loop", () => {
   assert.equal(state.turn, 12);
   assert.ok(state.history.filter((entry) => entry.type === "settlement").length >= 12);
   assert.ok(state.audits.length >= 10);
+  assert.deepEqual(chainEvents, ["chain_layoff_1", "chain_layoff_2", "chain_layoff_3"]);
+  assert.deepEqual(chapters.slice(0, 3), ["起步期", "探索期", "扩张期"]);
+  assert.ok(state.delayedConsequences.some((item) => item.status === "resolved"));
 });

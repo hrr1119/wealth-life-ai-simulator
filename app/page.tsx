@@ -12,10 +12,13 @@ import {
   THEMES,
 } from "@/lib/content";
 import {
+  AI_INTERACTIONS,
   LIFE_ACTIONS,
   advanceTurn,
-  buyAsset,
+  beginYearPlanning,
   changeTheme,
+  commitYearPlan,
+  continueAfterChapter,
   createGame,
   formatMoney,
   formatSignedMoney,
@@ -23,11 +26,17 @@ import {
   getEmergencyMonths,
   getFinancialFreedomProgress,
   getNetWorth,
-  learnSkill,
-  resolveOpportunity,
+  removePlannedAction,
+  revealNextResult,
   resolvePendingEvent,
-  switchCareer,
-  takeLifeAction,
+  scheduleAIInteraction,
+  scheduleAsset,
+  scheduleCareer,
+  scheduleLifeAction,
+  scheduleOpportunity,
+  scheduleSkill,
+  skipYearReveals,
+  upgradeGameState,
 } from "@/lib/engine";
 import { generateOpportunityCards } from "@/lib/opportunity";
 import type {
@@ -62,8 +71,7 @@ function safeLoadSave(): GameState | null {
     const raw = window.localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as GameState;
-    if (parsed.version !== 1 || !parsed.world || !parsed.roleId) return null;
-    return parsed;
+    return upgradeGameState(parsed);
   } catch {
     return null;
   }
@@ -436,6 +444,24 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
           ))}
         </div>
       </div>
+      <div className="board-progress">
+        <div>
+          <span className="micro-label">人生任务</span>
+          {state.quests.map((quest) => (
+            <span className={quest.status === "complete" ? "is-complete" : ""} key={quest.id}>
+              <i>{quest.status === "complete" ? "✓" : ""}</i>
+              {quest.title}
+              <small>{Math.min(quest.target, Math.round(quest.progress * 10) / 10)}/{quest.target}</small>
+            </span>
+          ))}
+        </div>
+        <div>
+          <span className="micro-label">已解锁路线</span>
+          {state.unlockedRoutes.length
+            ? state.unlockedRoutes.slice(-3).map((route) => <b key={route}>{route}</b>)
+            : <small>完成任务后，棋盘会长出新的行动入口</small>}
+        </div>
+      </div>
     </section>
   );
 }
@@ -528,15 +554,82 @@ function StoryStage({
   state,
   onResolveEvent,
   onOpenAudit,
+  onBeginPlanning,
+  onRemovePlan,
+  onRevealNext,
+  onSkipReveals,
+  onAdvanceYear,
+  onContinueChapter,
 }: {
   state: GameState;
   onResolveEvent: (choiceId: string) => void;
   onOpenAudit: () => void;
+  onBeginPlanning: () => void;
+  onRemovePlan: (planId: string) => void;
+  onRevealNext: () => void;
+  onSkipReveals: () => void;
+  onAdvanceYear: () => void;
+  onContinueChapter: () => void;
 }) {
   const card = state.lastCard;
-  const latestAudit = state.audits.at(-1);
+  const reveal = state.reveals[state.revealIndex];
+  const latestAudit =
+    state.yearPhase === "reveal" && reveal?.auditId
+      ? state.audits.find((audit) => audit.id === reveal.auditId)
+      : state.audits.at(-1);
+  const phaseSteps = [
+    ["opening", "年度开场"],
+    ["planning", "安排计划"],
+    ["reveal", "逐项揭晓"],
+    ["consequence", "人物回应"],
+    ["chapter", "章节总结"],
+  ] as const;
   return (
-    <section className={`story-stage ${state.pendingEvent ? "has-event" : ""}`} aria-live="polite">
+    <section className={`story-stage story-stage--${state.yearPhase} ${state.pendingEvent ? "has-event" : ""}`} aria-live="polite">
+      <div className="year-flow" aria-label="年度流程">
+        {phaseSteps.map(([phase, label], index) => {
+          const activeIndex = phaseSteps.findIndex(([item]) => item === state.yearPhase);
+          return (
+            <span
+              key={phase}
+              className={index === activeIndex ? "is-current" : index < activeIndex ? "is-done" : ""}
+            >
+              <i>{index < activeIndex ? "✓" : index + 1}</i>
+              {label}
+            </span>
+          );
+        })}
+      </div>
+
+      {state.yearPhase === "opening" && (
+        <div className="annual-opening">
+          <header>
+            <span className="micro-label">{state.annualBriefing.chapter} · 城市与人物来信</span>
+            <h2>{state.annualBriefing.headline}</h2>
+          </header>
+          <div className="annual-opening__grid">
+            <article className="news-card">
+              <span>城市新闻</span>
+              <p>{state.annualBriefing.cityNews}</p>
+              <small>{state.annualBriefing.riskNote}</small>
+            </article>
+            <article className="message-card">
+              <div className="avatar">{state.annualBriefing.message.sender.slice(0, 1)}</div>
+              <span>
+                <b>{state.annualBriefing.message.sender}</b>
+                <small>{state.annualBriefing.message.role}</small>
+              </span>
+              <p>{state.annualBriefing.message.body}</p>
+            </article>
+            <article className="route-card">
+              <span>路线变化</span>
+              <p>{state.annualBriefing.routeUpdate}</p>
+              <small>同桌动向：{state.annualBriefing.aiSummary}</small>
+            </article>
+          </div>
+        </div>
+      )}
+
       <div className="story-card">
         <div className="story-card__rail">
           <span>{card.eyebrow}</span>
@@ -555,7 +648,7 @@ function StoryStage({
               <p>{card.outcome}</p>
             </div>
           )}
-          {latestAudit && !state.pendingEvent && (
+          {latestAudit && !state.pendingEvent && state.yearPhase !== "opening" && (
             <button className="audit-link" onClick={onOpenAudit}>
               查看本次规则快照 · 成功率 {Math.round(latestAudit.finalProbability * 100)}%
               <span>→</span>
@@ -563,7 +656,13 @@ function StoryStage({
           )}
         </div>
         <div className="story-card__stamp" aria-hidden="true">
-          {state.pendingEvent ? "待选" : "已裁决"}
+          {state.pendingEvent
+            ? "待选"
+            : state.yearPhase === "planning"
+              ? "计划中"
+              : state.yearPhase === "reveal"
+                ? `${state.revealIndex + 1}/${state.reveals.length}`
+                : "已记录"}
         </div>
       </div>
 
@@ -591,6 +690,162 @@ function StoryStage({
           </div>
         </div>
       )}
+
+      {state.yearPhase === "opening" && !state.pendingEvent && (
+        <div className="phase-actions phase-actions--opening">
+          <span>
+            <b>今年不是点一下“下一年”</b>
+            <small>你会先安排时间，再一起揭晓结果与延迟后果。</small>
+          </span>
+          <button className="primary-button" onClick={onBeginPlanning}>
+            展开年度计划桌 <span>→</span>
+          </button>
+        </div>
+      )}
+
+      {state.yearPhase === "planning" && (
+        <div className="year-plan">
+          <header>
+            <div>
+              <span className="micro-label">第 {state.turn} 年 · 同时规划</span>
+              <h3>你的年度时间安排</h3>
+            </div>
+            <strong>
+              {state.plan.reduce((sum, item) => sum + item.timeCost, 0)}
+              <small>/8 点已安排</small>
+            </strong>
+          </header>
+          <div className="year-plan__timeline">
+            {state.plan.map((item) => (
+              <article key={item.id} className={`plan-chip plan-chip--${item.kind}`}>
+                <span>{item.category}</span>
+                <b>{item.label}</b>
+                <small>{item.timeCost} 点时间{item.cashCost ? ` · ${formatMoney(item.cashCost)}` : ""}</small>
+                {item.kind !== "core" && (
+                  <button onClick={() => onRemovePlan(item.id)} aria-label={`移除${item.label}`}>×</button>
+                )}
+              </article>
+            ))}
+            {Array.from(
+              { length: Math.max(0, 8 - state.plan.reduce((sum, item) => sum + item.timeCost, 0)) },
+              (_, index) => <i className="plan-slot" key={index}>空</i>,
+            )}
+          </div>
+          <div className="plan-conflicts">
+            <span>组合提示</span>
+            <p>
+              {state.plan.some((item) => item.kind === "skill") && state.plan.some((item) => item.kind === "career")
+                ? "学习会先于职业转型结算，新增能力可以直接参与本年度转型概率。"
+                : state.plan.some((item) => item.kind === "social")
+                  ? "人物互动会进入长期记忆，对方可能在未来介绍机会，也可能因失信退出。"
+                  : "剩余时间越多不等于越好：未安排时间会作为恢复空间，但也意味着放弃成长样本。"}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {state.yearPhase === "reveal" && reveal && (
+        <div className={`reveal-stage ${reveal.success ? "is-success" : "is-failure"}`}>
+          <header>
+            <span>结果 {String(state.revealIndex + 1).padStart(2, "0")} / {String(state.reveals.length).padStart(2, "0")}</span>
+            <div>
+              {state.reveals.map((item, index) => (
+                <i key={item.id} className={index <= state.revealIndex ? "is-active" : ""} />
+              ))}
+            </div>
+          </header>
+          <div className="reveal-card">
+            <div className="card-flip" aria-hidden="true">
+              <span>{reveal.success ? "成" : "变"}</span>
+            </div>
+            <div>
+              <span className="micro-label">{reveal.eyebrow}</span>
+              <h3>{reveal.title}</h3>
+              <p>{reveal.outcome}</p>
+              <div className="reveal-deltas">
+                {reveal.statChanges.length ? reveal.statChanges.map((change) => (
+                  <span key={change.label} className={change.value >= 0 ? "is-positive" : "is-negative"}>
+                    {change.label} {change.value >= 0 ? "+" : ""}{change.label.includes("现金") || change.label.includes("收入") ? formatMoney(change.value) : Math.round(change.value)}
+                  </span>
+                )) : <span>状态被保留，没有即时数值变化</span>}
+              </div>
+              {reveal.probability !== undefined && (
+                <button className="audit-link" onClick={onOpenAudit}>
+                  查看概率如何逐项形成 · {Math.round(reveal.probability * 100)}% <span>→</span>
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="phase-actions">
+            <button className="secondary-button" onClick={onSkipReveals}>快速汇总</button>
+            <button className="primary-button" onClick={onRevealNext}>
+              {state.revealIndex >= state.reveals.length - 1 ? "查看人物与世界回应" : "翻开下一张"}
+              <span>→</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.yearPhase === "consequence" && state.consequenceScene && (
+        <div className="consequence-stage">
+          <article className="character-reaction">
+            <div className="avatar avatar--large">{state.consequenceScene.speaker.slice(0, 1)}</div>
+            <span>
+              <b>{state.consequenceScene.speaker}</b>
+              <small>{state.consequenceScene.role}</small>
+            </span>
+            <blockquote>{state.consequenceScene.reaction}</blockquote>
+          </article>
+          <div className="consequence-grid">
+            <article>
+              <span>新路线</span>
+              {state.consequenceScene.unlocked.length
+                ? state.consequenceScene.unlocked.map((item) => <b key={item}>解锁 · {item}</b>)
+                : <p>继续完成年度任务，新的棋盘路线会在这里出现。</p>}
+            </article>
+            <article>
+              <span>未来回声</span>
+              {state.consequenceScene.delayed.length
+                ? state.consequenceScene.delayed.map((item) => <b key={item}>{item}</b>)
+                : <p>今年没有新增延迟风险，但过去的承诺仍可能到期。</p>}
+            </article>
+          </div>
+          <div className="phase-actions">
+            <span>
+              <b>准备结算第 {state.turn} 年</b>
+              <small>收入、支出、资产波动与利息将在这一步统一结算。</small>
+            </span>
+            <button className="primary-button" onClick={onAdvanceYear}>完成这一年 <span>→</span></button>
+          </div>
+        </div>
+      )}
+
+      {state.yearPhase === "chapter" && state.chapterSummary && (
+        <div className="chapter-stage">
+          <header>
+            <span>人生章节 · {String(state.chapterSummary.index).padStart(2, "0")}</span>
+            <h2>{state.chapterSummary.title}</h2>
+            <small>{state.chapterSummary.years}</small>
+          </header>
+          <div className="chapter-score">
+            <strong>{state.chapterSummary.resilience}</strong>
+            <span>章节韧性</span>
+            <p>{state.chapterSummary.headline}</p>
+          </div>
+          <ol>
+            {state.chapterSummary.highlights.map((item) => <li key={item}>{item}</li>)}
+          </ol>
+          <div className="chapter-routes">
+            <span>已解锁路线</span>
+            {state.chapterSummary.unlockedRoutes.length
+              ? state.chapterSummary.unlockedRoutes.map((item) => <b key={item}>{item}</b>)
+              : <small>下个章节继续完成任务，路线会从你的真实选择中解锁。</small>}
+          </div>
+          <button className="primary-button" onClick={onContinueChapter}>
+            进入第 {state.turn} 年 · {state.annualBriefing.chapter} <span>→</span>
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -605,6 +860,8 @@ function ActionDock({
   onAdvance: () => void;
 }) {
   const disabled = Boolean(state.pendingEvent);
+  const plannedTime = state.plan.reduce((sum, item) => sum + item.timeCost, 0);
+  const remainingTime = Math.max(0, 8 - plannedTime);
   const actions: Array<[ModalName, string, string, string]> = [
     ["careers", "职业", "转行与谈判", "职"],
     ["skills", "学习", "能力与天赋", "学"],
@@ -619,10 +876,10 @@ function ActionDock({
         <span className="micro-label">时间预算</span>
         <div>
           {Array.from({ length: 8 }, (_, index) => (
-            <i key={index} className={index < state.actionPoints ? "is-filled" : ""} />
+            <i key={index} className={index < plannedTime ? "is-filled" : ""} />
           ))}
         </div>
-        <b>{state.actionPoints}/8</b>
+        <b>{plannedTime}/8</b>
       </div>
       <div className="action-dock__items">
         {actions.map(([modal, label, sub, icon]) => (
@@ -639,8 +896,8 @@ function ActionDock({
       </div>
       <button className="advance-button" onClick={onAdvance} disabled={disabled}>
         <span>
-          <small>{state.actionPoints === 0 ? "时间预算已用完" : `将放弃剩余 ${state.actionPoints} 点`}</small>
-          推进一年
+          <small>{remainingTime === 0 ? "时间预算已排满" : `保留 ${remainingTime} 点恢复空间`}</small>
+          锁定并揭晓
         </span>
         <b>→</b>
       </button>
@@ -926,7 +1183,7 @@ function OpportunityModal({
                   <div><dt>时间</dt><dd>{card.timeCost} 点</dd></div>
                   <div><dt>基础概率</dt><dd>{Math.round(card.baseProbability * 100)}%</dd></div>
                 </dl>
-                <footer>选择并交给规则引擎裁决 <span>↗</span></footer>
+                <footer>加入年度计划，统一揭晓 <span>↗</span></footer>
               </button>
             ))}
           </div>
@@ -940,10 +1197,12 @@ function InfoModal({
   type,
   state,
   onClose,
+  onAIInteraction,
 }: {
   type: "ledger" | "knowledge" | "network" | "audit" | "help";
   state: GameState;
   onClose: () => void;
+  onAIInteraction?: (playerId: string, interactionId: string) => void;
 }) {
   if (type === "ledger") {
     return (
@@ -1018,20 +1277,45 @@ function InfoModal({
                 <h3>{player.name}</h3>
                 <p>目标：{player.goal}</p>
                 <small>当前行动：{player.currentMove}</small>
+                <p className="character-trait">{player.personality}</p>
+                <small>底线：{player.boundary}</small>
               </div>
               <dl>
-                <div><dt>关系</dt><dd>{player.relationship}</dd></div>
+                <div><dt>信任</dt><dd>{player.trust}</dd></div>
                 <div><dt>现金</dt><dd>{formatCompactMoney(player.cash)}</dd></div>
               </dl>
+              <div className="character-memory">
+                <span>长期记忆</span>
+                <small>{player.memories.slice(-2).join(" · ")}</small>
+              </div>
+              {state.yearPhase === "planning" && onAIInteraction && (
+                <div className="character-actions">
+                  {AI_INTERACTIONS.map((interaction) => (
+                    <button
+                      key={interaction.id}
+                      onClick={() => onAIInteraction(player.id, interaction.id)}
+                      title={interaction.description}
+                    >
+                      {interaction.label}
+                      <small>{interaction.timeCost} 点</small>
+                    </button>
+                  ))}
+                </div>
+              )}
             </article>
           ))}
         </div>
-        <p className="modal-footnote">首版为单机独立决策。数据模型已保留借款、担保、交易与合伙的后续联机接口。</p>
+        <p className="modal-footnote">
+          角色会依据目标、信任、财务状态与底线独立回应；互动会进入长期记忆，不是固定加成。
+        </p>
       </BaseModal>
     );
   }
   if (type === "audit") {
-    const audit = state.audits.at(-1);
+    const activeReveal = state.yearPhase === "reveal" ? state.reveals[state.revealIndex] : undefined;
+    const audit = activeReveal?.auditId
+      ? state.audits.find((item) => item.id === activeReveal.auditId)
+      : state.audits.at(-1);
     return (
       <BaseModal eyebrow="规则引擎审计" title={audit?.label ?? "暂无概率快照"} onClose={onClose}>
         {audit ? (
@@ -1071,9 +1355,10 @@ function InfoModal({
   return (
     <BaseModal eyebrow="如何游玩" title="每个回合，只看三件事" onClose={onClose}>
       <ol className="help-steps">
-        <li><b>01</b><span><strong>看路线</strong>确认当前人生节点、世界周期和同桌角色的动向。</span></li>
-        <li><b>02</b><span><strong>看现金流</strong>不是只看净资产，而是确认流动性、支出与负债是否可承受。</span></li>
-        <li><b>03</b><span><strong>做行动</strong>用 8 点时间预算安排学习、职业、投资、关系或休整，然后推进一年。</span></li>
+        <li><b>01</b><span><strong>读开场</strong>城市新闻、人物消息与过去承诺会一起改变今年的棋盘。</span></li>
+        <li><b>02</b><span><strong>排计划</strong>主业占用基础时间，剩余时间同时安排学习、关系、家庭、投资或休整。</span></li>
+        <li><b>03</b><span><strong>看揭晓</strong>卡牌逐张翻开，概率修正、数值变化、人物回应和延迟后果分阶段出现。</span></li>
+        <li><b>04</b><span><strong>过章节</strong>每三年生成一段人生章节，新路线由真实行动与长期因果解锁。</span></li>
       </ol>
       <div className="help-rule">
         <span>自由机会</span>
@@ -1209,6 +1494,7 @@ function GameScreen({
 }) {
   const [modal, setModal] = useState<ModalName>(null);
   const [toast, setToast] = useState("");
+  const [soundOn, setSoundOn] = useState(true);
   const role = ROLES.find((item) => item.id === state.roleId);
 
   useEffect(() => {
@@ -1223,6 +1509,31 @@ function GameScreen({
     if (result.success) {
       onState(result.state);
       if (close) setModal(null);
+      if (soundOn) {
+        try {
+          const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+          if (AudioContextClass) {
+            const context = new AudioContextClass();
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = result.state.yearPhase === "reveal" ? "triangle" : "sine";
+            oscillator.frequency.setValueAtTime(
+              result.state.yearPhase === "chapter" ? 392 : result.state.yearPhase === "consequence" ? 330 : 260,
+              context.currentTime,
+            );
+            gain.gain.setValueAtTime(0.0001, context.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.055, context.currentTime + 0.015);
+            gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.16);
+            oscillator.connect(gain);
+            gain.connect(context.destination);
+            oscillator.start();
+            oscillator.stop(context.currentTime + 0.18);
+            oscillator.addEventListener("ended", () => void context.close());
+          }
+        } catch {
+          // Audio feedback is progressive enhancement.
+        }
+      }
     }
     setToast(result.message);
     window.setTimeout(() => setToast(""), 2800);
@@ -1247,6 +1558,14 @@ function GameScreen({
             </select>
           </label>
           <ShareButton compact className="share-trigger--topbar" />
+          <button
+            className="sound-button"
+            onClick={() => setSoundOn((current) => !current)}
+            aria-label={soundOn ? "关闭声音反馈" : "开启声音反馈"}
+            title={soundOn ? "声音反馈已开启" : "声音反馈已关闭"}
+          >
+            {soundOn ? "♪" : "—"}
+          </button>
           <button className="help-button" onClick={() => setModal("help")} aria-label="帮助">?</button>
           <button className="identity-button" onClick={onExit}>
             <span>{role?.name.slice(0, 1)}</span>
@@ -1260,26 +1579,43 @@ function GameScreen({
           <Board state={state} onOpportunity={() => setModal("opportunity")} />
           <FinanceConsole state={state} onOpenLedger={() => setModal("ledger")} onOpenKnowledge={() => setModal("knowledge")} />
         </div>
-        <StoryStage state={state} onResolveEvent={(choiceId) => applyResult(resolvePendingEvent(state, choiceId), false)} onOpenAudit={() => setModal("audit")} />
+        <StoryStage
+          state={state}
+          onResolveEvent={(choiceId) => applyResult(resolvePendingEvent(state, choiceId), false)}
+          onOpenAudit={() => setModal("audit")}
+          onBeginPlanning={() => applyResult(beginYearPlanning(state), false)}
+          onRemovePlan={(planId) => applyResult(removePlannedAction(state, planId), false)}
+          onRevealNext={() => applyResult(revealNextResult(state), false)}
+          onSkipReveals={() => applyResult(skipYearReveals(state), false)}
+          onAdvanceYear={() => applyResult(advanceTurn(state), false)}
+          onContinueChapter={() => applyResult(continueAfterChapter(state), false)}
+        />
       </main>
-      <ActionDock state={state} onOpen={setModal} onAdvance={() => applyResult(advanceTurn(state), false)} />
+      {state.yearPhase === "planning" && (
+        <ActionDock state={state} onOpen={setModal} onAdvance={() => applyResult(commitYearPlan(state), false)} />
+      )}
 
       {(modal === "skills" || modal === "careers" || modal === "assets" || modal === "actions") && (
         <CatalogModal
           type={modal}
           state={state}
           onClose={() => setModal(null)}
-          onSkill={(id) => applyResult(learnSkill(state, id))}
-          onCareer={(id) => applyResult(switchCareer(state, id))}
-          onAsset={(id) => applyResult(buyAsset(state, id))}
-          onLifeAction={(id) => applyResult(takeLifeAction(state, id))}
+          onSkill={(id) => applyResult(scheduleSkill(state, id))}
+          onCareer={(id) => applyResult(scheduleCareer(state, id))}
+          onAsset={(id) => applyResult(scheduleAsset(state, id))}
+          onLifeAction={(id) => applyResult(scheduleLifeAction(state, id))}
         />
       )}
       {modal === "opportunity" && (
-        <OpportunityModal state={state} onClose={() => setModal(null)} onChoose={(card) => applyResult(resolveOpportunity(state, card))} />
+        <OpportunityModal state={state} onClose={() => setModal(null)} onChoose={(card) => applyResult(scheduleOpportunity(state, card))} />
       )}
       {(modal === "ledger" || modal === "knowledge" || modal === "network" || modal === "audit" || modal === "help") && (
-        <InfoModal type={modal} state={state} onClose={() => setModal(null)} />
+        <InfoModal
+          type={modal}
+          state={state}
+          onClose={() => setModal(null)}
+          onAIInteraction={(playerId, interactionId) => applyResult(scheduleAIInteraction(state, playerId, interactionId))}
+        />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
