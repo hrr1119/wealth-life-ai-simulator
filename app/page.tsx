@@ -1276,7 +1276,7 @@ function OpportunityModal({
                   <div><dt>时间</dt><dd>{card.timeCost} 点</dd></div>
                   <div><dt>基础概率</dt><dd>{Math.round(card.baseProbability * 100)}%</dd></div>
                 </dl>
-                <footer>加入年度计划，统一揭晓 <span>↗</span></footer>
+                <footer>加入普通行动，稍后查看因果 <span>↗</span></footer>
               </button>
             ))}
           </div>

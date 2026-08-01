@@ -513,7 +513,7 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
     phaseDeadline: current.phase_deadline,
     worldEvent: parseJson(current.world_event, {
       title: "等待世界生成",
-      description: "房主开始后会共同揭晓宏观事件。",
+      description: "房主开始后将先公开本回合的世界状态。",
       modifier: 0,
     }),
     players: players.map((player) => ({
@@ -648,7 +648,7 @@ async function handleAction(
   }
 
   if (action === "submit_plan") {
-    if (room.phase !== "planning") return json({ error: "当前不是同时规划阶段。" }, 409);
+    if (room.phase !== "planning") return json({ error: "当前不是普通行动阶段。" }, 409);
     const plan = validateMultiplayerPlanSelection(body.plan, player.cash);
     if (!plan) return json({ error: "计划需包含 1–3 项行动，最多 8 点时间且不能超过可用现金。" }, 400);
     const update = await db
