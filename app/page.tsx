@@ -362,7 +362,7 @@ function SetupScreen({
         <span>30 条职业路线</span>
         <span>48 项技能</span>
         <span>24 类资产</span>
-        <span>56 个动态事件原型</span>
+        <span>86 个动态事件原型</span>
         <span>4 套桌面主题</span>
       </footer>
     </div>

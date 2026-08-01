@@ -1,5 +1,6 @@
 import { CAREER_STORY_EVENTS } from "./career-story.ts";
 import { EVENTS } from "./content.ts";
+import { LIFE_STORY_EVENTS } from "./life-story.ts";
 import type {
   EventDefinition,
   EventDirectorDecision,
@@ -125,6 +126,12 @@ function reasonsFor(
     "career-shock": "职业冲击",
     "career-transition": "职业转型",
     "career-independent": "独立经营",
+    "life-business": "创业经营与公司治理",
+    "life-family": "家庭、住房与照护",
+    "life-investment": "投资周期与流动性",
+    "life-contract": "关系、合同与合规",
+    "life-consumer": "消费陷阱与债务重置",
+    "life-platform": "自由职业与平台经营",
   };
   const hit = (event.triggerTags ?? []).find((tag) =>
     [...actionSignals, ...stateSignals].some((signal) => signal.includes(tag) || tag.includes(signal)),
@@ -149,7 +156,7 @@ export function directPersonalEvent(state: GameState, roll: number): DirectedEve
   const actionSignals = currentActionSignals(state);
   const stateSignals = currentStateSignals(state);
   const preferredTypes = signalTypes(actionSignals);
-  const allEvents = [...CAREER_STORY_EVENTS, ...EVENTS];
+  const allEvents = [...CAREER_STORY_EVENTS, ...LIFE_STORY_EVENTS, ...EVENTS];
   const scores: Record<string, number> = {};
   const ranked = allEvents
     .filter((event) => eligible(state, event, actionSignals))

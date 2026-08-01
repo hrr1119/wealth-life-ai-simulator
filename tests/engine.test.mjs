@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { ASSETS, CAREERS, EVENTS, SKILLS, createAIPlayers } from "../lib/content.ts";
 import { CAREER_STORY_EVENTS } from "../lib/career-story.ts";
+import { directPersonalEvent } from "../lib/event-director.ts";
+import { LIFE_STORY_EVENTS } from "../lib/life-story.ts";
 import {
   advanceTurn,
   beginYearPlanning,
@@ -45,7 +47,46 @@ test("content library keeps the MVP breadth", () => {
   assert.equal(CAREER_STORY_EVENTS.length, 20, "one complete career pack has twenty authored events");
   assert.equal(new Set(CAREER_STORY_EVENTS.map((event) => event.storyPackId)).size, 4);
   assert.ok(CAREER_STORY_EVENTS.every((event) => event.choices.length === 3));
+  assert.equal(LIFE_STORY_EVENTS.length, 30, "six life domains each provide a five-stage story");
+  assert.equal(new Set(LIFE_STORY_EVENTS.map((event) => event.storyPackId)).size, 6);
+  assert.ok(LIFE_STORY_EVENTS.every((event) => event.choices.length === 3));
+  assert.equal(EVENTS.length + CAREER_STORY_EVENTS.length + LIFE_STORY_EVENTS.length, 86);
   assert.equal(createAIPlayers(20260801).length, 4, "the table has at least four independent AI roles");
+});
+
+test("life story packs preserve authored continuity and unique memory evidence", () => {
+  const packs = Map.groupBy(LIFE_STORY_EVENTS, (event) => event.storyPackId);
+  assert.equal(packs.size, 6);
+  for (const [packId, events] of packs) {
+    const ordered = events.toSorted((a, b) => a.storyStage - b.storyStage);
+    assert.deepEqual(ordered.map((event) => event.storyStage), [1, 2, 3, 4, 5]);
+    for (let index = 1; index < ordered.length; index += 1) {
+      const previous = ordered[index - 1];
+      const current = ordered[index];
+      const memoryPrefix = `人生包:${packId.replace("life-", "")}:${previous.storyStage}`;
+      assert.ok(current.requiredAnyTags.includes(memoryPrefix));
+      assert.ok(previous.choices.every((choice) => choice.memoryTags.includes(memoryPrefix)));
+    }
+  }
+});
+
+test("the event director prioritizes the next stage of an active life story", () => {
+  const state = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 223344 });
+  state.turn = 2;
+  state.memory["人生包:business:1"] = 1;
+  state.history.push({
+    id: "business-signal",
+    turn: 2,
+    type: "action",
+    title: "经营、补库存与拓客",
+    description: "测试经营故事连续性",
+    tags: ["企业", "经营", "现金流"],
+    timestamp: 2,
+  });
+  const directed = directPersonalEvent(state, 0);
+  assert.ok(directed.director.lastDecision.candidateIds.includes("business-inventory"));
+  assert.equal(directed.pending.event.id, "business-inventory");
+  assert.ok(directed.director.lastDecision.reasons.some((reason) => reason.includes("第 2 阶段")));
 });
 
 test("the seeded random stream is deterministic and bounded", () => {
