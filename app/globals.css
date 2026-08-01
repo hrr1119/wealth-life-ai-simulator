@@ -2097,22 +2097,84 @@ button.board-node:hover {
   color: var(--subtle);
 }
 
-.skill-level i {
+.skill-level i,
+.career-match i {
   background: var(--surface-soft);
   border-radius: 99px;
   height: 4px;
   overflow: hidden;
 }
 
-.skill-level em {
+.skill-level em,
+.career-match em {
   background: var(--accent);
   display: block;
   height: 100%;
 }
 
 .career-match b {
-  grid-column: 2 / 4;
   text-align: right;
+}
+
+.catalog-requirement {
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  margin-top: 9px;
+  padding: 7px 8px;
+}
+
+.catalog-requirement span {
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.catalog-requirement small,
+.combo-hint {
+  font-size: 7px;
+  line-height: 1.45;
+}
+
+.catalog-requirement.is-blocked {
+  background: color-mix(in srgb, var(--negative) 10%, transparent);
+  color: var(--negative);
+}
+
+.catalog-requirement.is-ready {
+  background: color-mix(in srgb, var(--positive) 10%, transparent);
+  color: var(--positive);
+}
+
+.combo-hint {
+  color: var(--subtle);
+  display: block;
+  margin-top: 8px;
+}
+
+.portfolio-strip {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 12px 0;
+}
+
+.portfolio-strip > span {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+}
+
+.portfolio-strip small {
+  color: var(--subtle);
+  font-size: 7px;
+}
+
+.portfolio-strip b {
+  color: var(--ink-strong);
+  font-size: 10px;
 }
 
 .asset-bars {
@@ -3314,6 +3376,74 @@ button.board-node:hover {
   font-size: 16px;
 }
 
+.portfolio-diagnostics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.portfolio-diagnostics article {
+  background: var(--surface-soft);
+  border-radius: 11px;
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+}
+
+.portfolio-diagnostics span,
+.portfolio-diagnostics small {
+  color: var(--subtle);
+  font-size: 7px;
+}
+
+.portfolio-diagnostics b {
+  color: var(--ink-strong);
+  font-family: var(--font-display);
+  font-size: 17px;
+}
+
+.allocation-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.allocation-list > span {
+  align-items: center;
+  display: grid;
+  font-size: 7px;
+  gap: 8px;
+  grid-template-columns: 70px 1fr 32px;
+}
+
+.allocation-list i {
+  background: var(--surface-soft);
+  border-radius: 99px;
+  height: 5px;
+  overflow: hidden;
+}
+
+.allocation-list em {
+  background: var(--accent);
+  display: block;
+  height: 100%;
+}
+
+.portfolio-warnings {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.portfolio-warnings p {
+  background: color-mix(in srgb, var(--negative) 9%, transparent);
+  border-left: 2px solid var(--negative);
+  color: var(--muted);
+  font-size: 7px;
+  margin: 0;
+  padding: 7px 9px;
+}
+
 .section-title {
   color: var(--ink-strong);
   font-family: var(--font-display);
@@ -3361,6 +3491,33 @@ button.board-node:hover {
 .ledger-table strong {
   color: var(--ink-strong);
   text-align: right;
+}
+
+.ledger-table > .ledger-holding {
+  grid-template-columns: 1fr 150px 90px 190px;
+}
+
+.holding-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.holding-actions button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--accent);
+  font-size: 7px;
+  padding: 6px 7px;
+}
+
+.holding-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.holding-actions button:disabled {
+  color: var(--subtle);
+  opacity: 0.55;
 }
 
 .history-list > div {
@@ -4545,6 +4702,11 @@ button.board-node:hover {
     grid-template-columns: 1fr 1fr;
   }
 
+  .portfolio-strip,
+  .portfolio-diagnostics {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .ledger-table > div,
   .history-list > div {
     align-items: start;
@@ -4553,6 +4715,14 @@ button.board-node:hover {
 
   .ledger-table > div > span:nth-child(2) {
     display: none;
+  }
+
+  .ledger-table > .ledger-holding {
+    grid-template-columns: 1fr auto;
+  }
+
+  .ledger-holding .holding-actions {
+    grid-column: 1 / -1;
   }
 
   .talent-list > div {

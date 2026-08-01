@@ -23,6 +23,7 @@ import {
   resolveMacroEventPhase,
   resolvePersonalEventPhase,
   scheduleAIInteraction,
+  scheduleAssetSale,
   scheduleDeepAction,
   scheduleLifeAction,
   scheduleSkill,
@@ -31,6 +32,13 @@ import {
   skipYearReveals,
   upgradeGameState,
 } from "../lib/engine.ts";
+import {
+  getActiveSkillCombinations,
+  getAssetSaleQuote,
+  getCareerReadiness,
+  getPortfolioDiagnostics,
+  getUnmetSkillPrerequisites,
+} from "../lib/progression.ts";
 import { generateOpportunityCards } from "../lib/opportunity.ts";
 import { generateOpportunityCardsWithAI } from "../lib/ai.ts";
 import {
@@ -94,6 +102,67 @@ test("the seeded random stream is deterministic and bounded", () => {
   const second = Array.from({ length: 20 }, (_, index) => seededRandom(20260728, index));
   assert.deepEqual(first, second);
   assert.ok(first.every((value) => value >= 0 && value < 1));
+});
+
+test("advanced skills require real foundations and combinations become auditable evidence", () => {
+  const state = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 334455 });
+  const unmet = getUnmetSkillPrerequisites(state.skills, "portfolio");
+  assert.deepEqual(unmet.map((item) => item.skillId), ["finance", "risk"]);
+  const blocked = learnSkill(state, "portfolio");
+  assert.equal(blocked.success, false);
+  assert.match(blocked.message, /前置证据/);
+
+  state.skills.finance = 2;
+  state.skills.research = 2;
+  state.skills.risk = 2;
+  state.skills.portfolio = 1;
+  assert.ok(getActiveSkillCombinations(state.skills, ["finance"]).some((item) => item.id === "evidence-investor"));
+  const learned = learnSkill(state, "portfolio");
+  assert.equal(learned.success, true);
+  const comboStudy = learnSkill(learned.state, "finance");
+  assert.equal(comboStudy.success, true);
+  assert.ok(comboStudy.state.audits.at(-1).summary.some((line) => /技能组合/.test(line)));
+});
+
+test("career readiness responds to skill evidence, runway and market context", () => {
+  const state = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 445566 });
+  const career = CAREERS.find((item) => item.id === "quant");
+  const before = getCareerReadiness(state, career);
+  assert.equal(before.label, "准备不足");
+  assert.ok(before.blockers.length > 0);
+
+  state.cash = 500_000;
+  state.energy = 95;
+  for (const skillId of career.requiredSkills) state.skills[skillId] = 4;
+  for (const tag of career.tags) state.memory[tag] = 1;
+  const after = getCareerReadiness(state, career);
+  assert.ok(after.score > before.score + 0.35);
+  assert.ok(["证据成形", "高度匹配"].includes(after.label));
+  assert.ok(after.strengths.some((line) => /熟练度/.test(line)));
+});
+
+test("portfolio diagnostics expose concentration and asset sales keep liquidity costs", () => {
+  let state = createGame({ mode: "quick", theme: "paper", roleId: "merchant", seed: 556677 });
+  state.cash = 500_000;
+  state = buyAsset(state, "restaurant_equity", 100_000).state;
+  const diagnostics = getPortfolioDiagnostics(state);
+  assert.equal(diagnostics.largestPositionShare, 1);
+  assert.ok(diagnostics.warnings.some((line) => /单一持仓/.test(line)));
+  const quote = getAssetSaleQuote(state, "restaurant_equity", 0.25);
+  assert.equal(quote.fraction, 0.25);
+  assert.ok(quote.netProceeds < quote.grossValue);
+  assert.equal(quote.timeCost, 3);
+
+  state.yearPhase = "opening";
+  state.pendingEvent = null;
+  state = beginYearPlanning(state).state;
+  const scheduled = scheduleAssetSale(state, "restaurant_equity", 0.25);
+  assert.equal(scheduled.success, true);
+  assert.equal(scheduled.state.plan.at(-1).kind, "asset_sale");
+  const committed = commitYearPlan(scheduled.state);
+  assert.equal(committed.success, true);
+  assert.ok(committed.state.history.some((entry) => entry.title === "变现餐饮合伙股权"));
+  assert.ok(committed.state.assets[0].value < 100_000);
 });
 
 test("multiplayer plans enforce simultaneous room boundaries", () => {

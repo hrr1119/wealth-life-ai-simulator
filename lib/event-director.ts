@@ -1,6 +1,7 @@
 import { CAREER_STORY_EVENTS } from "./career-story.ts";
 import { EVENTS } from "./content.ts";
 import { LIFE_STORY_EVENTS } from "./life-story.ts";
+import { getPortfolioDiagnostics } from "./progression.ts";
 import type {
   EventDefinition,
   EventDirectorDecision,
@@ -44,10 +45,14 @@ function currentActionSignals(state: GameState): string[] {
 
 function currentStateSignals(state: GameState): string[] {
   const result = [state.world.cycle, state.world.platformTrend];
+  const portfolio = getPortfolioDiagnostics(state);
   if (state.cash < (state.fixedExpense + state.variableExpense) * 3) result.push("现金缓冲不足");
   if (state.stress >= 68) result.push("高压力");
   if (state.health <= 55) result.push("健康预警");
   if (state.assets.length) result.push("持有资产");
+  if (portfolio.largestPositionShare > 0.55) result.push("投资集中度过高");
+  if (portfolio.weightedLiquidity > 0 && portfolio.weightedLiquidity < 0.4) result.push("资产流动性不足");
+  if (portfolio.highRiskShare > 0.5) result.push("高风险资产暴露");
   if (state.debt > state.cash) result.push("负债压力");
   if (state.aiPlayers.some((player) => player.trust >= 68)) result.push("可信关系");
   if (state.deep?.family.partnered) result.push("共同家庭");

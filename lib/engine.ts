@@ -16,6 +16,13 @@ import {
   recordEventOnRoute,
   upgradeLifeRouteState,
 } from "./life-route.ts";
+import {
+  getActiveSkillCombinations,
+  getAssetSaleQuote,
+  getCareerReadiness,
+  getSkillSynergyBonus,
+  getUnmetSkillPrerequisites,
+} from "./progression.ts";
 import type {
   ActionResult,
   AnnualBriefing,
@@ -919,7 +926,8 @@ function probabilitySnapshot(
     skillIds.length === 0
       ? 0
       : skillIds.reduce((sum, id) => sum + (state.skills[id] ?? 0), 0) / skillIds.length;
-  const skillModifier = clamp((skillAverage - 1) * 0.055, -0.08, 0.18);
+  const synergyBonus = getSkillSynergyBonus(state.skills, skillIds);
+  const skillModifier = clamp((skillAverage - 1) * 0.055 + synergyBonus, -0.08, 0.21);
   const resourceModifier = clamp((resourceAdequacy - 0.5) * 0.18, -0.12, 0.09);
   const relationshipModifier = clamp((state.relationship - 50) / 600, -0.07, 0.08);
   const talentKey = talentKeyForSkills(skillIds);
@@ -942,6 +950,7 @@ function probabilitySnapshot(
   const success = roll <= finalProbability;
   const summary = [
     skillModifier >= 0.03 ? "相关技能形成正向修正" : "相关技能样本仍不足",
+    ...(synergyBonus > 0 ? [`技能组合形成 +${Math.round(synergyBonus * 100)}% 复合修正`] : []),
     resourceModifier >= 0 ? "资源准备较充分" : "时间或资金准备偏紧",
     environmentModifier >= 0 ? "当前环境提供顺风" : "宏观与行业环境形成逆风",
     relationshipModifier >= 0.03 ? "信用与关系网络提供帮助" : "关系修正有限",
@@ -988,6 +997,11 @@ export function learnSkill(state: GameState, skillId: string): ActionResult {
   if (state.pendingEvent) return { state, success: false, message: "请先处理当前事件。" };
   if (state.actionPoints < skill.timeCost) return { state, success: false, message: "本回合时间预算不足。" };
   if (state.cash < skill.cost) return { state, success: false, message: "现金不足，不能在此时承担学习成本。" };
+  const unmet = getUnmetSkillPrerequisites(state.skills, skillId);
+  if (unmet.length) {
+    const names = unmet.map((item) => `${SKILLS.find((candidate) => candidate.id === item.skillId)?.name ?? item.skillId} ${item.level.toFixed(1)}`).join("、");
+    return { state, success: false, message: `这是一项进阶能力，请先形成前置证据：${names}。` };
+  }
 
   const level = state.skills[skillId] ?? 0;
   const base = clamp(0.76 - level * 0.09, 0.45, 0.82);
@@ -1007,11 +1021,12 @@ export function learnSkill(state: GameState, skillId: string): ActionResult {
   });
   next.actionPoints -= skill.timeCost;
   next.skills[skillId] = clamp(level + (snapshot.success ? 1 : 0.35), 0, 5);
+  const activeCombinations = getActiveSkillCombinations(next.skills, [skillId]);
   next = sampleTalent(next, [skillId]);
   next = addKnowledge(next, ["人力资本", "机会成本"]);
-  next = addMemory(next, ["持续学习", `${skill.category}学习`]);
+  next = addMemory(next, ["持续学习", `${skill.category}学习`, ...activeCombinations.map((item) => `技能组合:${item.id}`)]);
   const outcome = snapshot.success
-    ? `掌握度提升到 ${next.skills[skillId].toFixed(1)}，获得了可用于职业与机会判断的新样本。`
+    ? `掌握度提升到 ${next.skills[skillId].toFixed(1)}，获得了可用于职业与机会判断的新样本。${activeCombinations.length ? ` 激活组合：${activeCombinations.map((item) => item.name).join("、")}。` : ""}`
     : "这次学习没有立刻形成熟练度，但投入成为下一次尝试的经验样本。";
   next = finalizeActionCard(
     next,
@@ -1039,14 +1054,14 @@ export function switchCareer(state: GameState, careerId: string): ActionResult {
   const points = 4;
   if (state.actionPoints < points) return { state, success: false, message: "本回合时间预算不足。" };
   if (state.cash < career.entryCost) return { state, success: false, message: "现金不足以覆盖转型期成本。" };
-  const matched = career.requiredSkills.filter((id) => (state.skills[id] ?? 0) >= 1).length;
-  const preparedness = career.requiredSkills.length ? matched / career.requiredSkills.length : 0.5;
+  const readiness = getCareerReadiness(state, career);
+  const preparedness = readiness.score;
   const [snapshot, rolled] = probabilitySnapshot(
     state,
     `职业转型：${career.name}`,
-    0.38 + career.stability * 0.18,
+    0.24 + career.stability * 0.12 + readiness.score * 0.24,
     career.requiredSkills,
-    preparedness * 0.6 + state.energy / 250,
+    preparedness * 0.72 + state.energy / 360,
     career.tags[0],
   );
   let next = applyEffects(rolled, {
@@ -1065,8 +1080,8 @@ export function switchCareer(state: GameState, careerId: string): ActionResult {
   next = addKnowledge(next, ["人力资本", "时代适配", "机会成本"]);
   next = addMemory(next, [snapshot.success ? "成功转型" : "转型受挫", ...career.tags]);
   const outcome = snapshot.success
-    ? `你进入了${career.name}，月主动收入调整为 ${formatMoney(next.monthlyIncome)}。`
-    : `这次没有拿到${career.name}的入场资格，但履历与技能样本被保留。`;
+    ? `你以「${readiness.label}」的准备度进入了${career.name}，月主动收入调整为 ${formatMoney(next.monthlyIncome)}。`
+    : `你以「${readiness.label}」的准备度尝试${career.name}，这次没有拿到入场资格，但履历与技能样本被保留。`;
   next = finalizeActionCard(
     next,
     snapshot,
@@ -1136,6 +1151,50 @@ export function buyAsset(state: GameState, assetId: string, amount?: number): Ac
     description: outcome,
     cashDelta: -investAmount,
     tags: ["投资", asset.category, ...asset.tags],
+  });
+  return { state: next, success: true, message: outcome };
+}
+
+export function sellAsset(state: GameState, assetId: string, fraction = 1): ActionResult {
+  const held = state.assets.find((item) => item.id === assetId);
+  if (!held) return { state, success: false, message: "当前没有这项可出售资产。" };
+  if (state.pendingEvent) return { state, success: false, message: "请先处理当前事件。" };
+  const quote = getAssetSaleQuote(state, assetId, fraction);
+  if (!quote) return { state, success: false, message: "无法为这项资产形成有效变现报价。" };
+  if (state.actionPoints < quote.timeCost) return { state, success: false, message: "本回合时间预算不足以完成变现。" };
+
+  let next = applyEffects(state, { cash: quote.netProceeds, energy: -quote.timeCost * 2 });
+  next.actionPoints -= quote.timeCost;
+  const remainingFraction = 1 - quote.fraction;
+  if (remainingFraction <= 0.001) {
+    next.assets = next.assets.filter((item) => item.id !== assetId);
+  } else {
+    const target = next.assets.find((item) => item.id === assetId);
+    if (target) {
+      target.units *= remainingFraction;
+      target.value *= remainingFraction;
+      target.costBasis *= remainingFraction;
+    }
+  }
+  next.passiveIncome = next.assets.reduce((sum, item) => sum + (item.value * item.cashYield) / 12, 0);
+  next = addKnowledge(next, ["流动性", "资产配置", "变现折价"]);
+  next = addMemory(next, ["主动再平衡", `变现:${held.category}`, quote.haircutRate >= 0.06 ? "承受流动性折价" : "有序变现"]);
+  const outcome = `账面市值 ${formatMoney(quote.grossValue)}，扣除 ${Math.round(quote.haircutRate * 1000) / 10}% 交易与流动性折价后回收 ${formatMoney(quote.netProceeds)}；实现${quote.realizedGain >= 0 ? "收益" : "损失"} ${formatMoney(Math.abs(quote.realizedGain))}。`;
+  next = finalizeActionCard(
+    next,
+    null,
+    "组合管理 · 已变现",
+    `出售${Math.round(quote.fraction * 100)}% ${held.name}`,
+    "账面价格只有在能够成交时才是现金。系统按资产流动性、交易成本和当前周期计算真实变现折价。",
+    [held.category, "流动性", "再平衡"],
+    outcome,
+  );
+  next = addHistory(next, {
+    type: "action",
+    title: `变现${held.name}`,
+    description: outcome,
+    cashDelta: quote.netProceeds,
+    tags: ["投资", "再平衡", "流动性", held.category],
   });
   return { state: next, success: true, message: outcome };
 }
@@ -1382,6 +1441,22 @@ export function scheduleAsset(state: GameState, assetId: string): ActionResult {
     category: "投资",
     timeCost: asset.category === "房产" || asset.category === "企业股权" ? 3 : 1,
     cashCost: asset.minimum,
+  });
+}
+
+export function scheduleAssetSale(state: GameState, assetId: string, fraction: 0.25 | 1): ActionResult {
+  const held = state.assets.find((item) => item.id === assetId);
+  if (!held) return { state, success: false, message: "当前没有这项可出售资产。" };
+  const quote = getAssetSaleQuote(state, assetId, fraction);
+  if (!quote) return { state, success: false, message: "当前无法形成变现报价。" };
+  return schedulePlanItem(state, {
+    kind: "asset_sale",
+    targetId: held.id,
+    label: `组合再平衡 · 出售${Math.round(fraction * 100)}% ${held.name}`,
+    category: "投资",
+    timeCost: quote.timeCost,
+    cashCost: 0,
+    saleFraction: fraction,
   });
 }
 
@@ -1830,6 +1905,7 @@ function executePlannedAction(state: GameState, item: PlannedAction): ActionResu
   if (item.kind === "skill") return learnSkill(state, item.targetId);
   if (item.kind === "career") return switchCareer(state, item.targetId);
   if (item.kind === "asset") return buyAsset(state, item.targetId);
+  if (item.kind === "asset_sale") return sellAsset(state, item.targetId, item.saleFraction ?? 1);
   if (item.kind === "life") return takeLifeAction(state, item.targetId);
   if (item.kind === "opportunity" && item.payload) return resolveOpportunity(state, item.payload);
   if (item.kind === "social") return resolveSocialPlan(state, item);

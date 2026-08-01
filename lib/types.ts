@@ -350,6 +350,7 @@ export type PlannedActionKind =
   | "skill"
   | "career"
   | "asset"
+  | "asset_sale"
   | "life"
   | "opportunity"
   | "social"
@@ -430,6 +431,7 @@ export interface PlannedAction {
   cashCost: number;
   payload?: OpportunityCard;
   targetPlayerId?: string;
+  saleFraction?: number;
 }
 
 export interface AnnualBriefing {

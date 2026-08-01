@@ -34,6 +34,7 @@ import {
   resolvePersonalEventPhase,
   scheduleAIInteraction,
   scheduleAsset,
+  scheduleAssetSale,
   scheduleCareer,
   scheduleDeepAction,
   scheduleLifeAction,
@@ -43,6 +44,15 @@ import {
   skipEmptyPersonalEventPhase,
   upgradeGameState,
 } from "@/lib/engine";
+import {
+  SKILL_COMBINATIONS,
+  getAssetSaleQuote,
+  getCareerReadiness,
+  getMasteryBand,
+  getPortfolioDiagnostics,
+  getSkillPrerequisites,
+  getUnmetSkillPrerequisites,
+} from "@/lib/progression";
 import { generateOpportunityCards } from "@/lib/opportunity";
 import MultiplayerScreen from "@/app/multiplayer";
 import type {
@@ -1037,10 +1047,19 @@ function CatalogModal({
     const name = "name" in item ? item.name : "";
     return (filter === "全部" || category === filter) && name.includes(search.trim());
   });
+  const portfolio = getPortfolioDiagnostics(state);
 
   return (
     <BaseModal eyebrow={config[0]} title={config[1]} onClose={onClose} wide>
       <p className="modal-intro">{config[2]}</p>
+      {type === "assets" && state.assets.length > 0 && (
+        <div className="portfolio-strip">
+          <span><small>组合市值</small><b>{formatMoney(portfolio.totalValue)}</b></span>
+          <span><small>未实现盈亏</small><b className={portfolio.unrealizedGain >= 0 ? "is-positive" : "is-negative"}>{formatSignedMoney(portfolio.unrealizedGain)}</b></span>
+          <span><small>最大持仓</small><b>{Math.round(portfolio.largestPositionShare * 100)}%</b></span>
+          <span><small>加权流动性</small><b>{Math.round(portfolio.weightedLiquidity * 100)}</b></span>
+        </div>
+      )}
       <div className="catalog-tools">
         <div className="filter-tabs">
           {categories.slice(0, 9).map((category) => (
@@ -1064,16 +1083,26 @@ function CatalogModal({
           if (type === "skills") {
             const skill = item as (typeof SKILLS)[number];
             const level = state.skills[skill.id] ?? 0;
+            const prerequisites = getSkillPrerequisites(skill.id);
+            const unmet = getUnmetSkillPrerequisites(state.skills, skill.id);
+            const combinations = SKILL_COMBINATIONS.filter((combination) => combination.skillIds.includes(skill.id));
             return (
-              <button className="catalog-card" key={skill.id} onClick={() => onSkill(skill.id)}>
+              <button className="catalog-card" key={skill.id} disabled={unmet.length > 0} onClick={() => onSkill(skill.id)}>
                 <span className="catalog-card__label">{skill.category}</span>
                 <h3>{skill.name}</h3>
                 <p>{skill.description}</p>
                 <div className="skill-level">
-                  <span>掌握度</span>
+                  <span>{getMasteryBand(level)}</span>
                   <i><em style={{ width: `${(level / 5) * 100}%` }} /></i>
                   <b>{level.toFixed(1)}</b>
                 </div>
+                {prerequisites.length > 0 && (
+                  <div className={`catalog-requirement ${unmet.length ? "is-blocked" : "is-ready"}`}>
+                    <span>{unmet.length ? "前置未满足" : "前置已满足"}</span>
+                    <small>{prerequisites.map((entry) => `${SKILLS.find((candidate) => candidate.id === entry.skillId)?.name} ${entry.level.toFixed(1)}`).join(" · ")}</small>
+                  </div>
+                )}
+                {combinations.length > 0 && <small className="combo-hint">可组成：{combinations.map((entry) => entry.name).join(" / ")}</small>}
                 <footer>
                   <span>{formatMoney(skill.cost)}</span>
                   <span>{skill.timeCost} 点时间</span>
@@ -1084,16 +1113,19 @@ function CatalogModal({
           if (type === "careers") {
             const career = item as (typeof CAREERS)[number];
             const current = state.currentCareerId === career.id;
-            const matched = career.requiredSkills.filter((id) => (state.skills[id] ?? 0) >= 1).length;
+            const readiness = getCareerReadiness(state, career);
             return (
               <button className={`catalog-card ${current ? "is-current" : ""}`} key={career.id} disabled={current} onClick={() => onCareer(career.id)}>
                 <span className="catalog-card__label">{career.category}</span>
                 <h3>{career.name}</h3>
-                <p>稳定性 {Math.round(career.stability * 100)} · 压力 {career.stress} · 需要 {career.requiredSkills.length} 项技能</p>
+                <p>稳定性 {Math.round(career.stability * 100)} · 压力 {career.stress} · 目标熟练度 {readiness.requiredLevel.toFixed(1)}</p>
                 <div className="career-match">
-                  <span>技能匹配</span>
-                  <b>{matched}/{career.requiredSkills.length}</b>
+                  <span>{readiness.label}</span>
+                  <i><em style={{ width: `${readiness.score * 100}%` }} /></i>
+                  <b>{Math.round(readiness.score * 100)}%</b>
                 </div>
+                <small className="combo-hint">{readiness.skills.map((entry) => `${entry.name} ${entry.current.toFixed(1)}/${entry.required.toFixed(1)}`).join(" · ")}</small>
+                {readiness.blockers.length > 0 && <div className="catalog-requirement is-blocked"><span>主要缺口</span><small>{readiness.blockers.slice(0, 2).join("；")}</small></div>}
                 <footer>
                   <span>{current ? "当前职业" : `月收入 ${formatMoney(career.monthlyIncome)}`}</span>
                   <span>{formatMoney(career.entryCost)} 转型成本</span>
@@ -1299,13 +1331,16 @@ function InfoModal({
   state,
   onClose,
   onAIInteraction,
+  onAssetSale,
 }: {
   type: "ledger" | "knowledge" | "network" | "audit" | "help";
   state: GameState;
   onClose: () => void;
   onAIInteraction?: (playerId: string, interactionId: string) => void;
+  onAssetSale?: (assetId: string, fraction: 0.25 | 1) => void;
 }) {
   if (type === "ledger") {
+    const portfolio = getPortfolioDiagnostics(state);
     return (
       <BaseModal eyebrow="资产负债表" title="钱在哪里，以及为什么变化" onClose={onClose} wide>
         <div className="ledger-summary">
@@ -1314,6 +1349,23 @@ function InfoModal({
           <div><span>负债</span><b>{formatMoney(state.debt)}</b></div>
           <div><span>净资产</span><b>{formatMoney(getNetWorth(state))}</b></div>
         </div>
+        {state.assets.length > 0 && (
+          <>
+            <h3 className="section-title">组合风险诊断</h3>
+            <div className="portfolio-diagnostics">
+              <article><span>分散度</span><b>{Math.round(portfolio.diversificationScore * 100)}</b><small>越高越不依赖单一持仓</small></article>
+              <article><span>最大持仓</span><b>{Math.round(portfolio.largestPositionShare * 100)}%</b><small>单一判断的结果权重</small></article>
+              <article><span>高风险占比</span><b>{Math.round(portfolio.highRiskShare * 100)}%</b><small>高与极高风险持仓</small></article>
+              <article><span>组合流动性</span><b>{Math.round(portfolio.weightedLiquidity * 100)}</b><small>急需现金时的可变现能力</small></article>
+            </div>
+            <div className="allocation-list">
+              {portfolio.allocations.map((allocation) => (
+                <span key={allocation.category}><b>{allocation.category}</b><i><em style={{ width: `${allocation.share * 100}%` }} /></i><small>{Math.round(allocation.share * 100)}%</small></span>
+              ))}
+            </div>
+            {portfolio.warnings.length > 0 && <div className="portfolio-warnings">{portfolio.warnings.map((warning) => <p key={warning}>风险提示 · {warning}</p>)}</div>}
+          </>
+        )}
         {state.deep && (
           <>
             <h3 className="section-title">深度人生长期账户</h3>
@@ -1343,13 +1395,20 @@ function InfoModal({
         )}
         <h3 className="section-title">持有资产</h3>
         <div className="ledger-table">
-          {state.assets.length ? state.assets.map((asset) => (
-            <div key={asset.id}>
-              <span><b>{asset.name}</b><small>{asset.category} · {asset.risk}风险</small></span>
-              <span>成本 {formatMoney(asset.costBasis)}</span>
-              <strong>{formatMoney(asset.value)}</strong>
-            </div>
-          )) : <p className="empty-note">你还没有持有投资资产。现金本身也承担流动性任务。</p>}
+          {state.assets.length ? state.assets.map((asset) => {
+            const quote = getAssetSaleQuote(state, asset.id, 1);
+            return (
+              <div key={asset.id} className="ledger-holding">
+                <span><b>{asset.name}</b><small>{asset.category} · {asset.risk}风险 · 盈亏 {formatSignedMoney(asset.value - asset.costBasis)}</small></span>
+                <span>成本 {formatMoney(asset.costBasis)}<small>{quote ? `全部变现预计折价 ${(quote.haircutRate * 100).toFixed(1)}%` : ""}</small></span>
+                <strong>{formatMoney(asset.value)}</strong>
+                <aside className="holding-actions">
+                  <button disabled={state.yearPhase !== "planning"} onClick={() => onAssetSale?.(asset.id, 0.25)}>计划卖出 25%</button>
+                  <button disabled={state.yearPhase !== "planning"} onClick={() => onAssetSale?.(asset.id, 1)}>计划全部变现</button>
+                </aside>
+              </div>
+            );
+          }) : <p className="empty-note">你还没有持有投资资产。现金本身也承担流动性任务。</p>}
         </div>
         <h3 className="section-title">最近现金变动</h3>
         <div className="history-list">
@@ -1762,6 +1821,7 @@ function GameScreen({
           state={state}
           onClose={() => setModal(null)}
           onAIInteraction={(playerId, interactionId) => applyResult(scheduleAIInteraction(state, playerId, interactionId))}
+          onAssetSale={(assetId, fraction) => applyResult(scheduleAssetSale(state, assetId, fraction))}
         />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
