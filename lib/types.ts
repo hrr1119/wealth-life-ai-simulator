@@ -152,9 +152,88 @@ export interface EventDefinition {
   minTurn?: number;
   maxTurn?: number;
   requiredTags?: string[];
+  requiredAnyTags?: string[];
   blockedTags?: string[];
+  triggerTags?: string[];
+  storyPackId?: string;
+  storyStage?: number;
   weight: number;
   choices: EventChoice[];
+}
+
+export type RouteLaneId = "career" | "capital" | "life";
+export type RouteNodeCategory =
+  | "origin"
+  | "career"
+  | "skill"
+  | "income"
+  | "investment"
+  | "family"
+  | "relationship"
+  | "wellbeing"
+  | "opportunity"
+  | "event";
+export type RouteNodeStatus = "reached" | "scar" | "unlocked";
+
+export interface LifeRouteNode {
+  id: string;
+  lane: RouteLaneId;
+  category: RouteNodeCategory;
+  status: RouteNodeStatus;
+  label: string;
+  detail: string;
+  evidence: string;
+  turn: number;
+  sourceId?: string;
+}
+
+export interface LifeRouteEdge {
+  id: string;
+  lane: RouteLaneId;
+  from: string;
+  to: string;
+  kind: "choice" | "consequence" | "unlock";
+  label: string;
+  turn: number;
+}
+
+export interface LifeRouteCandidate {
+  id: string;
+  lane: RouteLaneId;
+  category: RouteNodeCategory;
+  label: string;
+  detail: string;
+  reason: string;
+  requirements: string[];
+  ready: boolean;
+}
+
+export interface LifeRouteState {
+  nodes: LifeRouteNode[];
+  edges: LifeRouteEdge[];
+  cursors: Record<RouteLaneId, string>;
+  candidates: LifeRouteCandidate[];
+  lastMutation: {
+    turn: number;
+    nodeId: string;
+    summary: string;
+  } | null;
+}
+
+export interface EventDirectorDecision {
+  turn: number;
+  actionSignals: string[];
+  stateSignals: string[];
+  candidateIds: string[];
+  selectedEventId: string | null;
+  reasons: string[];
+  scores: Record<string, number>;
+}
+
+export interface EventDirectorState {
+  recentEventIds: string[];
+  activeStoryPacks: Record<string, number>;
+  lastDecision: EventDirectorDecision | null;
 }
 
 export interface OpportunityCard {
@@ -423,7 +502,7 @@ export interface QuestState {
 }
 
 export interface GameState {
-  version: 4;
+  version: 5;
   phase: "playing" | "review";
   yearPhase: YearPhase;
   turnPhase: TurnPhase;
@@ -466,6 +545,8 @@ export interface GameState {
   chapterSummary: ChapterSummary | null;
   delayedConsequences: DelayedConsequence[];
   unlockedRoutes: string[];
+  routeGraph: LifeRouteState;
+  eventDirector: EventDirectorState;
   quests: QuestState[];
   chainProgress: Record<string, number>;
   pendingEvent: PendingEvent | null;
@@ -504,6 +585,15 @@ export interface ReviewInsight {
   tone: "positive" | "watch" | "neutral";
 }
 
+export interface ReviewCausalChain {
+  lane: RouteLaneId;
+  title: string;
+  cause: string;
+  effect: string;
+  evidence: string;
+  turns: number[];
+}
+
 export interface ReviewReport {
   netWorth: number;
   emergencyMonths: number;
@@ -514,6 +604,7 @@ export interface ReviewReport {
   style: string;
   styleDescription: string;
   insights: ReviewInsight[];
+  causalChains: ReviewCausalChain[];
   turningPoints: HistoryEntry[];
   knowledge: string[];
   luckVsPreparation: {

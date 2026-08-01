@@ -3963,6 +3963,45 @@ button.board-node:hover {
   text-align: right;
 }
 
+.causal-chains {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.causal-chains article {
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 15px 17px;
+}
+
+.causal-chains article small {
+  color: var(--accent);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+}
+
+.causal-chains article h3 {
+  font-size: 10px;
+  margin: 8px 0 4px;
+}
+
+.causal-chains article p,
+.causal-chains article blockquote {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.causal-chains article blockquote {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 9px;
+}
+
 .review-knowledge {
   display: grid;
   gap: 9px;
@@ -5662,6 +5701,32 @@ button.board-node:hover {
   background: var(--accent);
   border-color: var(--accent);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.route-lane__track article.is-scar {
+  background: color-mix(in srgb, #6f3028 18%, var(--board-deep));
+  border-color: color-mix(in srgb, #c76a55 62%, transparent);
+}
+
+.route-lane__track article.is-scar > i {
+  background: #a84f3d;
+  border-color: #d78a78;
+  color: #fff;
+}
+
+.route-lane__track article.is-unlocked {
+  border-color: color-mix(in srgb, var(--accent-soft) 78%, transparent);
+  box-shadow: inset 0 0 22px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.route-lane__track article.is-unlocked > i {
+  border-color: var(--accent-soft);
+  color: var(--accent-soft);
+}
+
+.route-lane__track article.is-locked {
+  border-style: dashed;
+  opacity: 0.68;
 }
 
 .route-lane__track article.is-current {

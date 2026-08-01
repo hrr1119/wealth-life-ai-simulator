@@ -362,7 +362,7 @@ function SetupScreen({
         <span>30 条职业路线</span>
         <span>48 项技能</span>
         <span>24 类资产</span>
-        <span>36 个动态事件原型</span>
+        <span>56 个动态事件原型</span>
         <span>4 套桌面主题</span>
       </footer>
     </div>
@@ -371,48 +371,48 @@ function SetupScreen({
 
 function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () => void }) {
   const quarter = getQuarter(state);
-  const career = CAREERS.find((item) => item.id === state.currentCareerId);
-  const skillNames = Object.entries(state.skills)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 2)
-    .map(([id]) => SKILLS.find((skill) => skill.id === id)?.name ?? id);
-  const recentActions = state.history.filter((item) => item.type === "action").slice(-4);
-  const routeProgress = Math.min(4, Math.max(1, Math.ceil((state.turn / state.maxTurns) * 4)));
-  const routeLanes = [
+  const recentRouteNodes = state.routeGraph.nodes
+    .filter((node) => node.category !== "origin")
+    .slice(-4);
+  const laneDefinitions = [
     {
       id: "career",
       title: "职业与能力",
       color: "jade",
-      nodes: [
-        { label: "起点身份", detail: ROLES.find((item) => item.id === state.roleId)?.name ?? "起点" },
-        { label: career?.name ?? "主业", detail: `${formatCompactMoney(state.monthlyIncome)}/月` },
-        { label: skillNames[0] ?? "等待样本", detail: skillNames.length ? "能力证据" : "尚未尝试" },
-        { label: state.unlockedRoutes.at(-1) ?? "下一次分岔", detail: "由选择解锁" },
-      ],
     },
     {
       id: "capital",
       title: "现金与资产",
       color: "gold",
-      nodes: [
-        { label: "现金起点", detail: formatCompactMoney(state.cash) },
-        { label: "安全垫", detail: `${getEmergencyMonths(state).toFixed(1)} 个月` },
-        { label: state.assets[0]?.name ?? "第一项资产", detail: state.assets.length ? `${state.assets.length} 项持有` : "尚未配置" },
-        { label: state.passiveIncome > 0 ? "被动现金流" : "长期选择权", detail: `${formatCompactMoney(state.passiveIncome)}/月` },
-      ],
     },
     {
       id: "life",
       title: "关系与生活",
       color: "copper",
-      nodes: [
-        { label: "同桌社会", detail: `${state.aiPlayers.length} 位角色` },
-        { label: "关系信用", detail: `${Math.round(state.relationship)} / 100` },
-        { label: state.health >= 65 ? "健康资本" : "身心预警", detail: `健康 ${Math.round(state.health)}` },
-        { label: state.deep?.family.partnered ? "共同家庭" : "生活边界", detail: `幸福 ${Math.round(state.happiness)}` },
-      ],
     },
-  ];
+  ] as const;
+  const routeLanes = laneDefinitions.map((lane) => {
+    const reached = state.routeGraph.nodes.filter((node) => node.lane === lane.id).slice(-3);
+    const candidate = state.routeGraph.candidates
+      .filter((item) => item.lane === lane.id)
+      .sort((a, b) => Number(b.ready) - Number(a.ready))[0];
+    return {
+      ...lane,
+      nodes: [
+        ...reached.map((node) => ({ ...node, candidate: false })),
+        ...(candidate
+          ? [{
+              id: candidate.id,
+              label: candidate.label,
+              detail: candidate.detail,
+              evidence: candidate.reason,
+              status: candidate.ready ? "unlocked" as const : "locked" as const,
+              candidate: true,
+            }]
+          : []),
+      ].slice(-4),
+    };
+  });
 
   return (
     <section className="board board--routes panel-frame" aria-label="多路径人生棋盘">
@@ -442,16 +442,21 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
               </header>
               <div className="route-lane__track">
                 {lane.nodes.map((node, index) => {
-                  const hasEvidence = index < routeProgress || (lane.id === "capital" && index === 2 && state.assets.length > 0);
-                  const isCurrent = index === routeProgress - 1;
+                  const isReached = node.status === "reached" || node.status === "scar";
+                  const isCurrent = !node.candidate && index === lane.nodes.length - (lane.nodes.at(-1)?.candidate ? 2 : 1);
                   return (
-                    <article className={`${hasEvidence ? "is-reached" : ""} ${isCurrent ? "is-current" : ""}`} key={`${lane.id}-${node.label}`}>
-                      <i>{hasEvidence ? "•" : ""}</i>
+                    <article
+                      className={`${isReached ? "is-reached" : ""} ${node.status === "scar" ? "is-scar" : ""} ${node.status === "unlocked" ? "is-unlocked" : ""} ${node.status === "locked" ? "is-locked" : ""} ${isCurrent ? "is-current" : ""}`}
+                      key={node.id}
+                      title={node.evidence}
+                    >
+                      <i>{node.status === "scar" ? "×" : node.status === "unlocked" ? "◇" : isReached ? "•" : ""}</i>
                       <span>
                         <b>{node.label}</b>
                         <small>{node.detail}</small>
                       </span>
-                      {isCurrent && <em>当前位置</em>}
+                      {isCurrent && <em>当前证据</em>}
+                      {node.candidate && <em>{node.status === "unlocked" ? "已满足" : "待解锁"}</em>}
                     </article>
                   );
                 })}
@@ -470,8 +475,8 @@ function Board({ state, onOpportunity }: { state: GameState; onOpportunity: () =
       <footer className="board-evidence">
         <div>
           <span className="micro-label">最近留下的路线证据</span>
-          {recentActions.length ? recentActions.map((item) => (
-            <span key={item.id}><i />{item.title}</span>
+          {recentRouteNodes.length ? recentRouteNodes.map((item) => (
+            <span key={item.id} title={item.evidence}><i />{item.label}</span>
           )) : <small>完成普通行动后，棋盘会记录真实路径，而不是预设剧情。</small>}
         </div>
         <div>
@@ -834,7 +839,10 @@ function StoryStage({
               <header className="event-card-hero">
                 <span>05 · {state.pendingEvent.event.type}事件</span><h2>{state.pendingEvent.event.title}</h2>
                 <p>{state.pendingEvent.event.narrative}</p>
-                <small>这张牌读取了你的行动历史、关系状态与世界环境；同一选择不会保证同一结果。</small>
+                <small>
+                  事件导演：{state.eventDirector.lastDecision?.reasons.join("；") ?? "读取行动历史、关系状态与世界环境"}。
+                  同一选择不会保证同一结果。
+                </small>
               </header>
               <div className="choice-cards">
                 {state.pendingEvent.event.choices.map((choice, index) => (
@@ -1575,6 +1583,19 @@ function ReviewScreen({
               </article>
             ))}
           </div>
+          {report.causalChains.length > 0 && (
+            <div className="causal-chains">
+              <span className="micro-label">由路线图回放的真实因果链</span>
+              {report.causalChains.map((chain) => (
+                <article key={chain.lane}>
+                  <small>{chain.title} · 涉及第 {chain.turns.join("、")} 年</small>
+                  <h3>{chain.cause}</h3>
+                  <p>{chain.effect}</p>
+                  <blockquote>{chain.evidence}</blockquote>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="review-section">

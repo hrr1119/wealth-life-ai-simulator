@@ -457,7 +457,7 @@ const AI_ARCHETYPES = [
 
 export function createAIPlayers(seed: number): AIPlayer[] {
   const offset = Math.abs(seed) % AI_ARCHETYPES.length;
-  return [0, 1, 2].map((index) => {
+  return [0, 1, 2, 3].map((index) => {
     const item = AI_ARCHETYPES[(offset + index * 3) % AI_ARCHETYPES.length];
     return {
       id: item[0] as string,
@@ -469,13 +469,17 @@ export function createAIPlayers(seed: number): AIPlayer[] {
           ? "谨慎、重承诺，会先确认最坏结果"
           : index === 1
             ? "好奇、直接，愿意交换信息与资源"
-            : "目标感强，能合作，也会争夺同一机会",
+            : index === 2
+              ? "目标感强，能合作，也会争夺同一机会"
+              : "重视长期信用，会用小承诺逐步验证合作",
       boundary:
         index === 0
           ? "不接受没有书面约定的借款与担保"
           : index === 1
             ? "不会牺牲健康替别人无限兜底"
-            : "连续两次失信后会终止合作",
+            : index === 2
+              ? "连续两次失信后会终止合作"
+              : "不参与权责不清或现金流无法解释的项目",
       risk: item[4] as number,
       cash: 40_000 + ((seed + index * 7_913) % 55_000),
       monthlyIncome: 7_000 + Math.round((item[4] as number) * 8_000),

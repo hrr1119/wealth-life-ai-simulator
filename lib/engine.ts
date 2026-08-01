@@ -9,6 +9,13 @@ import {
   SKILLS,
   createAIPlayers,
 } from "./content.ts";
+import { createEventDirectorState, directPersonalEvent } from "./event-director.ts";
+import {
+  createLifeRouteState,
+  recordActionOnRoute,
+  recordEventOnRoute,
+  upgradeLifeRouteState,
+} from "./life-route.ts";
 import type {
   ActionResult,
   AnnualBriefing,
@@ -380,6 +387,30 @@ function copyState(state: GameState): GameState {
       effects: { ...item.effects },
     })),
     unlockedRoutes: [...state.unlockedRoutes],
+    routeGraph: {
+      nodes: state.routeGraph.nodes.map((node) => ({ ...node })),
+      edges: state.routeGraph.edges.map((edge) => ({ ...edge })),
+      cursors: { ...state.routeGraph.cursors },
+      candidates: state.routeGraph.candidates.map((candidate) => ({
+        ...candidate,
+        requirements: [...candidate.requirements],
+      })),
+      lastMutation: state.routeGraph.lastMutation ? { ...state.routeGraph.lastMutation } : null,
+    },
+    eventDirector: {
+      recentEventIds: [...state.eventDirector.recentEventIds],
+      activeStoryPacks: { ...state.eventDirector.activeStoryPacks },
+      lastDecision: state.eventDirector.lastDecision
+        ? {
+            ...state.eventDirector.lastDecision,
+            actionSignals: [...state.eventDirector.lastDecision.actionSignals],
+            stateSignals: [...state.eventDirector.lastDecision.stateSignals],
+            candidateIds: [...state.eventDirector.lastDecision.candidateIds],
+            reasons: [...state.eventDirector.lastDecision.reasons],
+            scores: { ...state.eventDirector.lastDecision.scores },
+          }
+        : null,
+    },
     quests: state.quests.map((quest) => ({ ...quest })),
     chainProgress: { ...state.chainProgress },
     audits: [...state.audits],
@@ -543,6 +574,7 @@ function createAnnualBriefing(state: GameState): AnnualBriefing {
     (item) => item.status === "pending" && item.dueTurn <= state.turn + 1,
   );
   const newestRoute = state.unlockedRoutes?.at(-1);
+  const routeMutation = state.routeGraph?.lastMutation;
   return {
     year: lifeYear,
     chapter,
@@ -558,7 +590,9 @@ function createAnnualBriefing(state: GameState): AnnualBriefing {
     aiSummary: state.aiPlayers
       .map((item) => `${item.name}${item.currentMove}`)
       .join("；"),
-    routeUpdate: newestRoute
+    routeUpdate: routeMutation?.turn === state.turn
+      ? `路线刚刚生长到「${routeMutation.summary}」，后续候选事件已据此重新排序。`
+      : newestRoute
       ? `你过去的选择已解锁「${newestRoute}」，它会改变后续事件与合作入口。`
       : `棋盘上的「${BOARD_STAGES[Math.min(BOARD_STAGES.length - 1, state.turn - 1)].label}」正在成为今年的主场景。`,
     riskNote: due
@@ -602,7 +636,7 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
           : "world");
   const upgraded = {
     ...legacy,
-    version: 4,
+    version: 5,
     timeScale: legacy.timeScale ?? "year",
     actionBudget: legacy.actionBudget ?? 8,
     age: legacy.age ?? 24 + Math.max(0, getLifeYear({
@@ -619,12 +653,28 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
     chapterSummary: legacy.chapterSummary ?? null,
     delayedConsequences: [...(legacy.delayedConsequences ?? [])],
     unlockedRoutes: [...(legacy.unlockedRoutes ?? [])],
+    routeGraph: legacy.routeGraph,
+    eventDirector: legacy.eventDirector
+      ? {
+          recentEventIds: [...(legacy.eventDirector.recentEventIds ?? [])],
+          activeStoryPacks: { ...(legacy.eventDirector.activeStoryPacks ?? {}) },
+          lastDecision: legacy.eventDirector.lastDecision ?? null,
+        }
+      : createEventDirectorState(),
     quests: (legacy.quests?.length ? legacy.quests : createDefaultQuests()).map((quest) => ({ ...quest })),
     chainProgress: { ...(legacy.chainProgress ?? {}) },
     queuedPersonalEvent: legacy.queuedPersonalEvent ?? null,
     macroEvent: legacy.macroEvent ?? null,
     aiPlayers: normalizeAIPlayers(legacy.aiPlayers, legacy.world.seed),
   } as GameState;
+  const role = ROLES.find((item) => item.id === upgraded.roleId) ?? ROLES[0];
+  const career = CAREERS.find((item) => item.id === upgraded.currentCareerId) ?? CAREERS[0];
+  upgraded.routeGraph = upgradeLifeRouteState(
+    upgraded,
+    legacy.routeGraph,
+    role.name,
+    career.name,
+  );
   upgraded.annualBriefing = legacy.annualBriefing ?? createAnnualBriefing(upgraded);
   return upgraded;
 }
@@ -637,7 +687,7 @@ export function createGame(config: NewGameConfig): GameState {
   for (const skill of role.starterSkills) skills[skill] = 1;
 
   const game: GameState = {
-    version: 4,
+    version: 5,
     phase: "playing",
     yearPhase: "opening",
     turnPhase: "world",
@@ -680,6 +730,8 @@ export function createGame(config: NewGameConfig): GameState {
     chapterSummary: null,
     delayedConsequences: [],
     unlockedRoutes: [],
+    routeGraph: undefined as unknown as GameState["routeGraph"],
+    eventDirector: createEventDirectorState(),
     quests: createDefaultQuests(),
     chainProgress: {},
     pendingEvent: null,
@@ -707,6 +759,8 @@ export function createGame(config: NewGameConfig): GameState {
     rngStep: 200,
     savedAt: Date.now(),
   };
+  const currentCareer = CAREERS.find((item) => item.id === game.currentCareerId) ?? CAREERS[0];
+  game.routeGraph = createLifeRouteState(game, role.name, currentCareer.name);
   game.annualBriefing = createAnnualBriefing(game);
   return game;
 }
@@ -1802,7 +1856,14 @@ export function commitYearPlan(state: GameState): ActionResult {
     const before = copyState(working);
     const result = executePlannedAction(working, item);
     working = result.state;
-    reveals.push(createReveal(before, working, item, index, result.success));
+    const reveal = createReveal(before, working, item, index, result.success);
+    reveals.push(reveal);
+    working.routeGraph = recordActionOnRoute(
+      working.routeGraph,
+      working,
+      item,
+      reveal,
+    );
   });
   working = updateQuestProgress(working);
   working = attachDelayedConsequences(working, plan, reveals);
@@ -2019,7 +2080,8 @@ function eventEligible(state: GameState, event: (typeof EVENTS)[number]): boolea
   return true;
 }
 
-function chooseEvent(state: GameState): [GameState["pendingEvent"], GameState] {
+/** @deprecated Use the post-action event director in the seven-phase turn flow. */
+export function chooseEvent(state: GameState): [GameState["pendingEvent"], GameState] {
   const lifeYear = getLifeYear(state);
   const chainWindow = state.timeScale === "year" || getQuarter(state) === 1;
   const chainEvent =
@@ -2350,9 +2412,8 @@ export function advanceTurn(state: GameState): ActionResult {
     const stored = next.delayedConsequences.find((item) => item.id === consequence.id);
     if (stored) stored.status = "resolved";
   }
-  const [pendingEvent, rolled] = chooseEvent(next);
-  next = rolled;
-  next.pendingEvent = pendingEvent;
+  next.pendingEvent = null;
+  next.queuedPersonalEvent = null;
   next.annualBriefing = createAnnualBriefing(next);
   const chapterPeriod = next.timeScale === "quarter" ? 12 : 3;
   if (completedPeriod % chapterPeriod === 0) {
@@ -2431,7 +2492,7 @@ export function resolvePendingEvent(state: GameState, choiceId: string): ActionR
   const choice = pending.event.choices.find((item) => item.id === choiceId);
   if (!choice) return { state, success: false, message: "未找到这个事件选择。" };
   let base = choice.baseProbability ?? 1;
-  if (pending.source === "chain") {
+  if (pending.event.id.startsWith("chain_layoff_")) {
     const preparation =
       (state.memory["裁员链:技能准备"] ? 0.12 : 0) +
       (state.memory["裁员链:现金准备"] ? 0.1 : 0) +
@@ -2451,7 +2512,7 @@ export function resolvePendingEvent(state: GameState, choiceId: string): ActionR
   let next = applyEffects(rolled, choice.effects);
   next = applyEffects(next, snapshot.success ? choice.successEffects ?? {} : choice.failureEffects ?? {});
   next.pendingEvent = null;
-  if (pending.source === "chain") {
+  if (pending.event.id.startsWith("chain_layoff_")) {
     next.chainProgress.careerShock = Math.max(
       next.chainProgress.careerShock ?? 0,
       Number(pending.event.id.at(-1) ?? 0),
@@ -2476,8 +2537,16 @@ export function resolvePendingEvent(state: GameState, choiceId: string): ActionR
     title: `${pending.event.title} · ${choice.label}`,
     description: outcome,
     cashDelta: choice.effects.cash,
-    tags: [pending.event.type, ...choice.knowledgeTags],
+    tags: [pending.event.type, `事件ID:${pending.event.id}`, ...choice.knowledgeTags],
   });
+  next.routeGraph = recordEventOnRoute(
+    next.routeGraph,
+    next,
+    pending.event,
+    choice.label,
+    outcome,
+    snapshot.success,
+  );
   return { state: next, success: true, message: outcome };
 }
 
@@ -2704,10 +2773,6 @@ export function enterOrdinaryActionPhase(state: GameState): ActionResult {
   if (!prepared.queuedPersonalEvent) {
     if (prepared.pendingEvent) {
       prepared.queuedPersonalEvent = prepared.pendingEvent;
-    } else {
-      const [event, rolled] = chooseEvent(prepared);
-      prepared = rolled;
-      prepared.queuedPersonalEvent = event;
     }
   }
   prepared.pendingEvent = null;
@@ -2744,15 +2809,23 @@ export function finishPlayerInteractionPhase(state: GameState): ActionResult {
   if (!committed.success) return committed;
   const summarized = skipYearReveals(committed.state);
   if (!summarized.success) return summarized;
-  summarized.state.turnPhase = "macro";
-  summarized.state.macroEvent = createMacroEvent(summarized.state);
-  summarized.state.lastCard = {
-    eyebrow: `${getPeriodLabel(summarized.state)} · 宏观公共事件`,
-    title: summarized.state.macroEvent.title,
-    narrative: summarized.state.macroEvent.narrative,
-    tags: ["宏观", summarized.state.world.cycle, ...summarized.state.macroEvent.affected.slice(0, 2)],
+  const [eventRoll, rolled] = nextRoll(summarized.state);
+  const directed = directPersonalEvent(rolled, eventRoll);
+  rolled.eventDirector = directed.director;
+  rolled.queuedPersonalEvent = directed.pending;
+  rolled.turnPhase = "macro";
+  rolled.macroEvent = createMacroEvent(rolled);
+  rolled.lastCard = {
+    eyebrow: `${getPeriodLabel(rolled)} · 宏观公共事件`,
+    title: rolled.macroEvent.title,
+    narrative: rolled.macroEvent.narrative,
+    tags: ["宏观", rolled.world.cycle, ...rolled.macroEvent.affected.slice(0, 2)],
   };
-  return { state: summarized.state, success: true, message: "行动已由规则引擎裁决，宏观事件牌翻开。" };
+  return {
+    state: rolled,
+    success: true,
+    message: "行动已裁决；个人事件候选已根据本回合选择重新排序，宏观事件牌翻开。",
+  };
 }
 
 export function resolveMacroEventPhase(state: GameState, choiceId: string): ActionResult {
@@ -2979,6 +3052,37 @@ export function generateReview(state: GameState): ReviewReport {
   );
   const decisions = clamp(1 - luck - preparation, 0.18, 0.58);
   const total = luck + preparation + decisions;
+  const laneTitles = {
+    career: "职业与能力因果链",
+    capital: "现金与资产因果链",
+    life: "关系与生活因果链",
+  } as const;
+  const causalChains: ReviewReport["causalChains"] = (["career", "capital", "life"] as const)
+    .map((lane) => {
+      const nodes = state.routeGraph.nodes.filter(
+        (node) => node.lane === lane && node.category !== "origin",
+      );
+      if (!nodes.length) return null;
+      const first = nodes[0];
+      const last = nodes.at(-1)!;
+      const nextCandidate = state.routeGraph.candidates.find(
+        (candidate) => candidate.lane === lane && candidate.ready,
+      );
+      return {
+        lane,
+        title: laneTitles[lane],
+        cause: `第 ${first.turn} 年，你选择了「${first.label}」：${first.detail}`,
+        effect:
+          first.id === last.id
+            ? nextCandidate
+              ? `这份证据已满足「${nextCandidate.label}」的路线条件。`
+              : "这份证据仍在等待下一次相关行动或事件连接。"
+            : `它最终连接到第 ${last.turn} 年的「${last.label}」：${last.detail}`,
+        evidence: last.evidence,
+        turns: [...new Set(nodes.map((node) => node.turn))],
+      };
+    })
+    .filter((chain): chain is NonNullable<typeof chain> => Boolean(chain));
 
   return {
     netWorth,
@@ -2990,6 +3094,7 @@ export function generateReview(state: GameState): ReviewReport {
     style,
     styleDescription,
     insights,
+    causalChains,
     turningPoints,
     knowledge: state.revealedKnowledge.filter((tag) => KNOWLEDGE_MODELS[tag]).slice(-10),
     luckVsPreparation: {

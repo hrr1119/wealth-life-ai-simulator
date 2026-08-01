@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ASSETS, CAREERS, EVENTS, SKILLS } from "../lib/content.ts";
+import { ASSETS, CAREERS, EVENTS, SKILLS, createAIPlayers } from "../lib/content.ts";
+import { CAREER_STORY_EVENTS } from "../lib/career-story.ts";
 import {
   advanceTurn,
   beginYearPlanning,
@@ -13,9 +14,9 @@ import {
   enterOrdinaryActionPhase,
   finishOrdinaryActionPhase,
   finishPlayerInteractionPhase,
+  generateReview,
   getNetWorth,
   learnSkill,
-  revealNextResult,
   resolvePendingEvent,
   resolveMacroEventPhase,
   resolvePersonalEventPhase,
@@ -26,6 +27,7 @@ import {
   settleTurnPhase,
   seededRandom,
   skipYearReveals,
+  upgradeGameState,
 } from "../lib/engine.ts";
 import { generateOpportunityCards } from "../lib/opportunity.ts";
 import { generateOpportunityCardsWithAI } from "../lib/ai.ts";
@@ -40,6 +42,10 @@ test("content library keeps the MVP breadth", () => {
   assert.ok(SKILLS.length >= 40, "at least 40 skills");
   assert.ok(ASSETS.length >= 20, "at least 20 assets");
   assert.ok(EVENTS.length >= 30, "at least 30 event templates");
+  assert.equal(CAREER_STORY_EVENTS.length, 20, "one complete career pack has twenty authored events");
+  assert.equal(new Set(CAREER_STORY_EVENTS.map((event) => event.storyPackId)).size, 4);
+  assert.ok(CAREER_STORY_EVENTS.every((event) => event.choices.length === 3));
+  assert.equal(createAIPlayers(20260801).length, 4, "the table has at least four independent AI roles");
 });
 
 test("the seeded random stream is deterministic and bounded", () => {
@@ -90,6 +96,28 @@ test("a new game reproduces its world from the same seed", () => {
   assert.deepEqual(a.talents, b.talents);
   assert.equal(a.maxTurns, 12);
   assert.equal(a.opportunityTokens, 1);
+});
+
+test("version four saves migrate into the route graph and event director", () => {
+  const legacy = structuredClone(
+    createGame({ mode: "quick", theme: "paper", roleId: "teacher", seed: 884212 }),
+  );
+  legacy.version = 4;
+  delete legacy.routeGraph;
+  delete legacy.eventDirector;
+  legacy.history.push({
+    id: "legacy-action",
+    turn: 1,
+    type: "action",
+    title: "legacy career evidence",
+    description: "a persisted choice from an older save",
+    tags: ["职业"],
+    timestamp: 1,
+  });
+  const migrated = upgradeGameState(legacy);
+  assert.equal(migrated.version, 5);
+  assert.ok(migrated.routeGraph.nodes.some((node) => node.label === "legacy career evidence"));
+  assert.deepEqual(migrated.eventDirector.recentEventIds, []);
 });
 
 test("AI opportunity parsing generates choices but never direct effects", () => {
@@ -232,7 +260,7 @@ test("the product-spec turn visits all seven distinct gameplay phases", () => {
 
   state = enterOrdinaryActionPhase(state).state;
   assert.equal(state.turnPhase, "action");
-  assert.ok(state.queuedPersonalEvent, "the personal event is held until its documented phase");
+  assert.equal(state.queuedPersonalEvent, null, "personal events are not selected before this turn's actions");
   assert.equal(state.pendingEvent, null);
 
   state = scheduleSkill(state, "writing").state;
@@ -243,6 +271,8 @@ test("the product-spec turn visits all seven distinct gameplay phases", () => {
   state = finishPlayerInteractionPhase(state).state;
   assert.equal(state.turnPhase, "macro");
   assert.ok(state.macroEvent);
+  assert.ok(state.queuedPersonalEvent, "the event director runs only after current actions resolve");
+  assert.ok(state.eventDirector.lastDecision.actionSignals.length > 0);
   assert.equal(state.yearPhase, "consequence", "ordinary actions are already rule-resolved before public events");
 
   state = resolveMacroEventPhase(state, state.macroEvent.choices[0].id).state;
@@ -346,33 +376,72 @@ test("AI tablemates remember interactions and can unlock relationship routes", (
   assert.ok(state.reveals.some((item) => item.tags.includes("AI角色") || item.tags.includes("关系")));
 });
 
+test("the route graph grows from decisions instead of elapsed turns", () => {
+  const initial = createGame({ mode: "quick", theme: "emerald", roleId: "steady", seed: 424244 });
+  assert.equal(initial.routeGraph.nodes.length, 3, "each lane starts with one explicit origin");
+  let state = enterOrdinaryActionPhase(initial).state;
+  state = scheduleSkill(state, "writing").state;
+  state = finishOrdinaryActionPhase(state).state;
+  state = finishPlayerInteractionPhase(state).state;
+  const writingNode = state.routeGraph.nodes.find((node) => node.sourceId === "writing");
+  assert.ok(writingNode, "the chosen skill becomes a persistent route node");
+  assert.equal(writingNode.turn, 1);
+  assert.match(writingNode.evidence, /./);
+  assert.ok(state.routeGraph.edges.some((edge) => edge.to === writingNode.id));
+
+  const untouched = createGame({ mode: "quick", theme: "emerald", roleId: "steady", seed: 424244 });
+  assert.equal(untouched.turn, state.turn);
+  assert.equal(untouched.routeGraph.nodes.length, 3, "time alone does not manufacture route progress");
+});
+
+test("current actions change the event director candidate set", () => {
+  function afterAction(actionId) {
+    let state = createGame({ mode: "quick", theme: "paper", roleId: "teacher", seed: 121212 });
+    state = enterOrdinaryActionPhase(state).state;
+    state = scheduleLifeAction(state, actionId).state;
+    state = finishOrdinaryActionPhase(state).state;
+    return finishPlayerInteractionPhase(state).state;
+  }
+
+  const incomePath = afterAction("side_project");
+  const recoveryPath = afterAction("rest");
+  assert.ok(incomePath.eventDirector.lastDecision.actionSignals.some((signal) => /副业|income/.test(signal)));
+  assert.ok(recoveryPath.eventDirector.lastDecision.actionSignals.some((signal) => /休息|恢复|wellbeing/.test(signal)));
+  assert.notDeepEqual(
+    incomePath.eventDirector.lastDecision.candidateIds.slice(0, 5),
+    recoveryPath.eventDirector.lastDecision.candidateIds.slice(0, 5),
+  );
+});
+
 test("a quick game can finish a complete twelve-year loop", () => {
   let state = createGame({ mode: "quick", theme: "emerald", roleId: "teacher", seed: 775533 });
   let guard = 0;
-  const chainEvents = [];
   const chapters = [];
-  while (state.phase !== "review" && guard < 120) {
-    if (state.pendingEvent) {
-      if (state.pendingEvent.source === "chain") chainEvents.push(state.pendingEvent.event.id);
-      const choice = state.pendingEvent.event.choices[0];
-      state = resolvePendingEvent(state, choice.id).state;
-    } else if (state.yearPhase === "opening") {
-      state = beginYearPlanning(state).state;
-    } else if (state.yearPhase === "planning") {
+  while (state.phase !== "review" && guard < 220) {
+    if (state.turnPhase === "world") {
+      state = enterOrdinaryActionPhase(state).state;
+    } else if (state.turnPhase === "action") {
       const scheduled = state.turn === 1
-        ? scheduleAIInteraction(state, state.aiPlayers[0].id, "offer_help")
+        ? scheduleSkill(state, "writing")
         : scheduleLifeAction(state, "rest");
       assert.equal(scheduled.success, true);
-      state = commitYearPlan(scheduled.state).state;
-    } else if (state.yearPhase === "reveal") {
-      state = state.turn % 2 === 0
-        ? skipYearReveals(state).state
-        : revealNextResult(state).state;
-    } else if (state.yearPhase === "consequence") {
-      state = advanceTurn(state).state;
-    } else if (state.yearPhase === "chapter") {
-      chapters.push(state.chapterSummary?.title);
-      state = continueAfterChapter(state).state;
+      state = finishOrdinaryActionPhase(scheduled.state).state;
+    } else if (state.turnPhase === "interaction") {
+      if (state.turn === 1) {
+        state = scheduleAIInteraction(state, state.aiPlayers[0].id, "offer_help").state;
+      }
+      state = finishPlayerInteractionPhase(state).state;
+    } else if (state.turnPhase === "macro") {
+      state = resolveMacroEventPhase(state, state.macroEvent.choices[0].id).state;
+    } else if (state.turnPhase === "personal") {
+      state = state.pendingEvent
+        ? resolvePersonalEventPhase(state, state.pendingEvent.event.choices[0].id).state
+        : skipEmptyPersonalEventPhase(state).state;
+    } else if (state.turnPhase === "settlement") {
+      state = settleTurnPhase(state).state;
+    } else if (state.turnPhase === "learning") {
+      if (state.chapterSummary) chapters.push(state.chapterSummary.title);
+      state = continueAfterLearningPhase(state).state;
     }
     guard += 1;
   }
@@ -380,7 +449,11 @@ test("a quick game can finish a complete twelve-year loop", () => {
   assert.equal(state.turn, 12);
   assert.ok(state.history.filter((entry) => entry.type === "settlement").length >= 12);
   assert.ok(state.audits.length >= 10);
-  assert.deepEqual(chainEvents, ["chain_layoff_1", "chain_layoff_2", "chain_layoff_3"]);
   assert.deepEqual(chapters.slice(0, 3), ["起步期", "探索期", "扩张期"]);
+  assert.ok(state.eventDirector.recentEventIds.length > 0);
+  assert.ok(state.routeGraph.nodes.length > 3);
   assert.ok(state.delayedConsequences.some((item) => item.status === "resolved"));
+  const review = generateReview(state);
+  assert.ok(review.causalChains.length > 0);
+  assert.ok(review.causalChains.every((chain) => chain.cause && chain.effect && chain.evidence));
 });
