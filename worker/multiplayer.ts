@@ -29,7 +29,7 @@ interface RoomRow {
   mode: "quick" | "standard";
   turn: number;
   max_turns: number;
-  phase: "lobby" | "planning" | "negotiation" | "settlement" | "complete";
+  phase: "lobby" | "planning" | "negotiation" | "settlement" | "learning" | "complete";
   seed: number;
   version: number;
   phase_deadline: number;
@@ -347,20 +347,11 @@ function createReveals(room: RoomRow, players: PlayerRow[]): MultiplayerReveal[]
 async function resolvePlanning(db: D1Database, room: RoomRow): Promise<void> {
   const claimed = await db
     .prepare(
-      "UPDATE multiplayer_rooms SET phase = 'settlement', updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'planning'",
+      "UPDATE multiplayer_rooms SET phase = 'negotiation', phase_deadline = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'planning'",
     )
-    .bind(Date.now(), room.code)
+    .bind(Date.now() + 180_000, Date.now(), room.code)
     .run();
   if ((claimed.meta?.changes ?? 0) !== 1) return;
-  const players = await getPlayers(db, room.code);
-  const latest = (await getRoom(db, room.code)) ?? room;
-  const reveals = createReveals(latest, players);
-  await db
-    .prepare(
-      "UPDATE multiplayer_rooms SET phase = 'negotiation', reveals_json = ?, phase_deadline = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
-    )
-    .bind(JSON.stringify(reveals), Date.now() + 180_000, Date.now(), room.code)
-    .run();
 }
 
 async function claimAndResolveIfReady(db: D1Database, code: string): Promise<void> {
@@ -419,7 +410,20 @@ async function tickNegotiation(db: D1Database, room: RoomRow): Promise<void> {
     .run();
   if ((claimed.meta?.changes ?? 0) !== 1) return;
   const settling = await getRoom(db, room.code);
-  if (settling) await applySettlement(db, settling);
+  if (settling) await prepareAndApplySettlement(db, settling);
+}
+
+async function prepareAndApplySettlement(db: D1Database, room: RoomRow): Promise<void> {
+  const players = await getPlayers(db, room.code);
+  const reveals = createReveals(room, players);
+  await db
+    .prepare(
+      "UPDATE multiplayer_rooms SET reveals_json = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
+    )
+    .bind(JSON.stringify(reveals), Date.now(), room.code)
+    .run();
+  const latest = await getRoom(db, room.code);
+  if (latest?.phase === "settlement") await applySettlement(db, latest);
 }
 
 async function applySettlement(db: D1Database, room: RoomRow): Promise<void> {
@@ -447,24 +451,38 @@ async function applySettlement(db: D1Database, room: RoomRow): Promise<void> {
         ),
     );
   }
-  const completed = room.turn >= room.max_turns;
-  const nextTurn = completed ? room.turn : room.turn + 1;
-  const event = worldEvent(room.seed, nextTurn);
   statements.push(
     db
       .prepare(
-        "UPDATE multiplayer_rooms SET turn = ?, phase = ?, phase_deadline = ?, world_event = ?, reveals_json = '[]', updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
+        "UPDATE multiplayer_rooms SET phase = 'learning', phase_deadline = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
       )
       .bind(
-        nextTurn,
-        completed ? "complete" : "planning",
-        completed ? 0 : Date.now() + PLANNING_WINDOW_MS,
-        JSON.stringify(event),
+        Date.now() + 180_000,
         Date.now(),
         room.code,
       ),
   );
   await db.batch(statements);
+}
+
+async function finishLearning(db: D1Database, room: RoomRow): Promise<void> {
+  if (room.phase !== "learning") return;
+  const completed = room.turn >= room.max_turns;
+  const nextTurn = completed ? room.turn : room.turn + 1;
+  const event = worldEvent(room.seed, nextTurn);
+  await db
+    .prepare(
+      "UPDATE multiplayer_rooms SET turn = ?, phase = ?, phase_deadline = ?, world_event = ?, reveals_json = '[]', updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'learning'",
+    )
+    .bind(
+      nextTurn,
+      completed ? "complete" : "planning",
+      completed ? 0 : Date.now() + PLANNING_WINDOW_MS,
+      JSON.stringify(event),
+      Date.now(),
+      room.code,
+    )
+    .run();
 }
 
 async function snapshot(db: D1Database, code: string): Promise<Response> {
@@ -476,7 +494,10 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
   } else if (room.phase === "negotiation") {
     await tickNegotiation(db, room);
   } else if (room.phase === "settlement" && Date.now() - room.updated_at > 4_000) {
-    await applySettlement(db, room);
+    if (parseJson<MultiplayerReveal[]>(room.reveals_json, []).length) await applySettlement(db, room);
+    else await prepareAndApplySettlement(db, room);
+  } else if (room.phase === "learning" && room.phase_deadline > 0 && room.phase_deadline <= Date.now()) {
+    await finishLearning(db, room);
   }
   const current = (await getRoom(db, code)) ?? room;
   const players = await getPlayers(db, code);
@@ -511,7 +532,7 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
       isHost: player.id === current.host_player_id,
     })),
     reveals:
-      current.phase === "negotiation" || current.phase === "complete"
+      current.phase === "learning" || current.phase === "settlement" || current.phase === "complete"
         ? parseJson(current.reveals_json, [])
         : [],
     trades: trades.map((trade) => ({
@@ -712,8 +733,12 @@ async function handleAction(
   }
 
   if (action === "advance") {
-    if (room.host_player_id !== player.id) return json({ error: "只有房主可以统一结算。" }, 403);
-    if (room.phase !== "negotiation") return json({ error: "还没有进入统一结算。" }, 409);
+    if (room.host_player_id !== player.id) return json({ error: "只有房主可以推进共同回合。" }, 403);
+    if (room.phase === "learning") {
+      await finishLearning(db, room);
+      return snapshot(db, code);
+    }
+    if (room.phase !== "negotiation") return json({ error: "当前阶段不能推进共同回合。" }, 409);
     const claimed = await db
       .prepare(
         "UPDATE multiplayer_rooms SET phase = 'settlement', updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'negotiation'",
@@ -722,7 +747,7 @@ async function handleAction(
       .run();
     if ((claimed.meta?.changes ?? 0) !== 1) return json({ error: "本回合正在结算。" }, 409);
     const settling = await getRoom(db, code);
-    if (settling) await applySettlement(db, settling);
+    if (settling) await prepareAndApplySettlement(db, settling);
     return snapshot(db, code);
   }
 

@@ -20,6 +20,7 @@ import type {
   EventDefinition,
   GameState,
   HistoryEntry,
+  MacroEventCard,
   NewGameConfig,
   NumericEffects,
   OpportunityCard,
@@ -402,6 +403,23 @@ function copyState(state: GameState): GameState {
     pendingEvent: state.pendingEvent
       ? { ...state.pendingEvent, event: state.pendingEvent.event }
       : null,
+    queuedPersonalEvent: state.queuedPersonalEvent
+      ? { ...state.queuedPersonalEvent, event: state.queuedPersonalEvent.event }
+      : null,
+    macroEvent: state.macroEvent
+      ? {
+          ...state.macroEvent,
+          affected: [...state.macroEvent.affected],
+          choices: state.macroEvent.choices.map((choice) => ({
+            ...choice,
+            effects: { ...choice.effects },
+            successEffects: { ...choice.successEffects },
+            failureEffects: { ...choice.failureEffects },
+            knowledgeTags: [...choice.knowledgeTags],
+            memoryTags: [...choice.memoryTags],
+          })),
+        }
+      : null,
     lastCard: { ...state.lastCard, tags: [...state.lastCard.tags] },
   };
 }
@@ -573,9 +591,18 @@ function normalizeAIPlayers(players: GameState["aiPlayers"] | undefined, seed: n
 export function upgradeGameState(input: GameState | Record<string, unknown>): GameState | null {
   const legacy = input as unknown as GameState;
   if (!legacy?.world || !legacy.roleId) return null;
+  const inferredTurnPhase =
+    legacy.turnPhase ??
+    (legacy.yearPhase === "planning"
+      ? "action"
+      : legacy.yearPhase === "chapter"
+        ? "learning"
+        : legacy.yearPhase === "reveal" || legacy.yearPhase === "consequence"
+          ? "macro"
+          : "world");
   const upgraded = {
     ...legacy,
-    version: 3,
+    version: 4,
     timeScale: legacy.timeScale ?? "year",
     actionBudget: legacy.actionBudget ?? 8,
     age: legacy.age ?? 24 + Math.max(0, getLifeYear({
@@ -584,6 +611,7 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
     }) - 1),
     deep: legacy.deep ?? null,
     yearPhase: legacy.yearPhase ?? "opening",
+    turnPhase: inferredTurnPhase,
     plan: [...(legacy.plan ?? [])],
     reveals: [...(legacy.reveals ?? [])],
     revealIndex: legacy.revealIndex ?? 0,
@@ -593,6 +621,8 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
     unlockedRoutes: [...(legacy.unlockedRoutes ?? [])],
     quests: (legacy.quests?.length ? legacy.quests : createDefaultQuests()).map((quest) => ({ ...quest })),
     chainProgress: { ...(legacy.chainProgress ?? {}) },
+    queuedPersonalEvent: legacy.queuedPersonalEvent ?? null,
+    macroEvent: legacy.macroEvent ?? null,
     aiPlayers: normalizeAIPlayers(legacy.aiPlayers, legacy.world.seed),
   } as GameState;
   upgraded.annualBriefing = legacy.annualBriefing ?? createAnnualBriefing(upgraded);
@@ -607,9 +637,10 @@ export function createGame(config: NewGameConfig): GameState {
   for (const skill of role.starterSkills) skills[skill] = 1;
 
   const game: GameState = {
-    version: 3,
+    version: 4,
     phase: "playing",
     yearPhase: "opening",
+    turnPhase: "world",
     mode: mode.id,
     timeScale: mode.timeScale,
     actionBudget: mode.actionBudget,
@@ -652,6 +683,8 @@ export function createGame(config: NewGameConfig): GameState {
     quests: createDefaultQuests(),
     chainProgress: {},
     pendingEvent: null,
+    queuedPersonalEvent: null,
+    macroEvent: null,
     lastCard: {
       eyebrow: "世界生成完成",
       title: `${role.name}，欢迎来到${createWorld(seed).city}`,
@@ -2458,6 +2491,366 @@ export function getBoardStage(state: GameState) {
       ? state.turn
       : Math.max(1, Math.ceil((state.turn / state.maxTurns) * 12));
   return BOARD_STAGES[clamp(normalizedTurn - 1, 0, BOARD_STAGES.length - 1)];
+}
+
+function createMacroEvent(state: GameState): MacroEventCard {
+  const cards: Record<GameState["world"]["cycle"], Omit<MacroEventCard, "id">> = {
+    繁荣: {
+      type: "宏观",
+      title: "高估值与招聘潮同时升温",
+      narrative: "城市里的岗位、融资和消费都在扩张，真实收入增长了，但资产价格与固定成本也被推高。繁荣不是免费红利，而是一张要求你决定扩张边界的公共事件牌。",
+      background: `通胀 ${(state.world.inflation * 100).toFixed(1)}% · 房产热度 ${Math.round(state.world.housingHeat * 100)} · ${state.world.platformTrend}`,
+      affected: ["职业机会", "成长资产", "经营成本", "消费倾向"],
+      choices: [
+        {
+          id: "prosperity-buffer",
+          label: "把新增收入留在安全垫",
+          description: "克制消费升级，优先建立可穿越下一轮周期的现金缓冲。",
+          risk: "低",
+          baseProbability: 0.94,
+          effects: { happiness: -1 },
+          successEffects: { cash: 4_000, stress: -2 },
+          failureEffects: {},
+          knowledgeTags: ["应急金", "生活方式膨胀"],
+          memoryTags: ["繁荣期保留流动性"],
+        },
+        {
+          id: "prosperity-skill",
+          label: "趁窗口升级可迁移能力",
+          description: "支付培训与试错成本，把繁荣期的机会转化为下一轮仍可使用的能力证据。",
+          risk: "中",
+          baseProbability: 0.72,
+          effects: { cash: -3_500, energy: -3 },
+          successEffects: { monthlyIncome: 420, credit: 2 },
+          failureEffects: { stress: 2 },
+          knowledgeTags: ["人力资本", "时代适配"],
+          memoryTags: ["顺周期学习"],
+        },
+        {
+          id: "prosperity-expand",
+          label: "顺势放大经营与投资",
+          description: "承担更高投入和管理压力，争取在窗口关闭前形成规模。",
+          risk: "高",
+          baseProbability: 0.54,
+          effects: { cash: -9_000, stress: 5 },
+          successEffects: { cash: 19_000, passiveIncome: 260 },
+          failureEffects: { cash: -4_000, happiness: -3 },
+          knowledgeTags: ["经营杠杆", "资产配置"],
+          memoryTags: ["繁荣期扩张"],
+        },
+      ],
+    },
+    平稳: {
+      type: "宏观",
+      title: "城市进入没有明显红利的换挡期",
+      narrative: "招聘、消费和资本市场都没有给出一致方向。这个阶段不会奖励追逐口号的人，真实交付、合同质量和现金流将拉开差距。",
+      background: `利率 ${(state.world.interestRate * 100).toFixed(1)}% · ${state.world.platformTrend} · 行业分化`,
+      affected: ["合同质量", "职业证据", "稳定现金流", "合作信用"],
+      choices: [
+        {
+          id: "steady-audit",
+          label: "复核现金流与低效承诺",
+          description: "停止一个没有证据的支出或项目，把资源收回到可验证路径。",
+          risk: "低",
+          baseProbability: 0.96,
+          effects: { happiness: -1 },
+          successEffects: { cash: 2_500, stress: -3 },
+          failureEffects: {},
+          knowledgeTags: ["现金流", "机会成本"],
+          memoryTags: ["换挡期复核"],
+        },
+        {
+          id: "steady-deliver",
+          label: "用一次真实交付争取复购",
+          description: "不追热点，集中完成一个能被客户或雇主验证的成果。",
+          risk: "中",
+          baseProbability: 0.7,
+          effects: { energy: -5, cash: -1_500 },
+          successEffects: { cash: 7_000, monthlyIncome: 320, credit: 3 },
+          failureEffects: { stress: 2 },
+          knowledgeTags: ["人力资本", "复利"],
+          memoryTags: ["真实交付"],
+        },
+        {
+          id: "steady-alliance",
+          label: "建立一份边界清楚的合作",
+          description: "用书面分工、收益和退出条款，把关系资源变成可持续协作。",
+          risk: "中",
+          baseProbability: 0.64,
+          effects: { cash: -2_000, energy: -2 },
+          successEffects: { relationship: 6, credit: 2, monthlyIncome: 180 },
+          failureEffects: { relationship: -2, stress: 3 },
+          knowledgeTags: ["合同", "关系复利"],
+          memoryTags: ["换挡期合作"],
+        },
+      ],
+    },
+    放缓: {
+      type: "宏观",
+      title: "订单收缩，行业开始明显分化",
+      narrative: "同一座城市里，有人仍在增长，也有人开始延迟付款和冻结岗位。现金缓冲、客户集中度和可迁移能力正在改变每个人承受的冲击。",
+      background: `增长放缓 · 利率 ${(state.world.interestRate * 100).toFixed(1)}% · 应收账款周期拉长`,
+      affected: ["主业稳定", "客户回款", "现金缓冲", "转行机会"],
+      choices: [
+        {
+          id: "slowdown-defend",
+          label: "缩短回款并保住现金",
+          description: "放弃一部分名义增长，优先收回应收款、压缩库存和可选支出。",
+          risk: "低",
+          baseProbability: 0.88,
+          effects: { happiness: -2 },
+          successEffects: { cash: 5_000, credit: 2 },
+          failureEffects: { stress: 1 },
+          knowledgeTags: ["现金流", "应急金"],
+          memoryTags: ["放缓期防守"],
+        },
+        {
+          id: "slowdown-transfer",
+          label: "把能力迁移到逆势需求",
+          description: "用时间研究降本、照护、维修或再训练需求，验证一条逆周期收入路线。",
+          risk: "中",
+          baseProbability: 0.62,
+          effects: { cash: -2_500, energy: -4 },
+          successEffects: { monthlyIncome: 460, happiness: 2 },
+          failureEffects: { stress: 3 },
+          knowledgeTags: ["时代适配", "收入多元"],
+          memoryTags: ["逆周期迁移"],
+        },
+        {
+          id: "slowdown-bet",
+          label: "押注被错杀的高波动机会",
+          description: "投入现金等待周期修复；判断正确会获得超额回报，错误则压缩后续选择权。",
+          risk: "高",
+          baseProbability: 0.42,
+          effects: { cash: -8_000, stress: 3 },
+          successEffects: { cash: 18_000 },
+          failureEffects: { cash: -5_000, happiness: -3 },
+          knowledgeTags: ["能力圈", "资产配置"],
+          memoryTags: ["放缓期逆向押注"],
+        },
+      ],
+    },
+    衰退: {
+      type: "宏观",
+      title: "信贷收紧，风险开始跨市场传导",
+      narrative: "岗位、订单和资产价格同时承压。坏消息对所有人公开，但负债期限、保障、关系信用和应急金让后果并不相同。",
+      background: `衰退压力 · 融资成本 ${(state.world.interestRate * 100 + 2.5).toFixed(1)}% · 流动性优先`,
+      affected: ["负债成本", "失业风险", "资产价格", "家庭责任"],
+      choices: [
+        {
+          id: "recession-survive",
+          label: "先保证六个月生存空间",
+          description: "暂停扩张，重谈支出与债务期限，让未来仍保留选择。",
+          risk: "低",
+          baseProbability: 0.84,
+          effects: { happiness: -2, credit: 1 },
+          successEffects: { cash: 3_500, stress: -4 },
+          failureEffects: { cash: -1_500 },
+          knowledgeTags: ["应急金", "负债管理"],
+          memoryTags: ["衰退期生存"],
+        },
+        {
+          id: "recession-network",
+          label: "用信用交换真实信息与订单",
+          description: "向可信关系说明能力、底线和可交付成果，争取转岗、客户或联合项目。",
+          risk: "中",
+          baseProbability: 0.58,
+          effects: { cash: -1_500, energy: -3 },
+          successEffects: { monthlyIncome: 520, relationship: 5 },
+          failureEffects: { relationship: -1, stress: 2 },
+          knowledgeTags: ["关系复利", "收入多元"],
+          memoryTags: ["衰退期求助"],
+        },
+        {
+          id: "recession-acquire",
+          label: "承担高风险，收购低价资产",
+          description: "只有资金期限足够长时才可能奏效；短期继续下跌会直接伤害现金流。",
+          risk: "极高",
+          baseProbability: 0.34,
+          effects: { cash: -10_000, stress: 5 },
+          successEffects: { cash: 24_000, passiveIncome: 180 },
+          failureEffects: { cash: -7_000, happiness: -4 },
+          knowledgeTags: ["期限错配", "资产配置"],
+          memoryTags: ["衰退期逆向收购"],
+        },
+      ],
+    },
+  };
+  return {
+    ...cards[state.world.cycle],
+    id: `macro-${state.turn}-${state.world.cycle}`,
+    affected: [...cards[state.world.cycle].affected],
+    choices: cards[state.world.cycle].choices.map((choice) => ({
+      ...choice,
+      effects: { ...choice.effects },
+      successEffects: { ...choice.successEffects },
+      failureEffects: { ...choice.failureEffects },
+      knowledgeTags: [...choice.knowledgeTags],
+      memoryTags: [...choice.memoryTags],
+    })),
+  };
+}
+
+export function enterOrdinaryActionPhase(state: GameState): ActionResult {
+  if (state.turnPhase !== "world") {
+    return { state, success: false, message: "请先完成当前回合阶段。" };
+  }
+  let prepared = copyState(state);
+  if (prepared.yearPhase === "chapter") {
+    const continued = continueAfterChapter(prepared);
+    if (!continued.success) return continued;
+    prepared = continued.state;
+  }
+  if (!prepared.queuedPersonalEvent) {
+    if (prepared.pendingEvent) {
+      prepared.queuedPersonalEvent = prepared.pendingEvent;
+    } else {
+      const [event, rolled] = chooseEvent(prepared);
+      prepared = rolled;
+      prepared.queuedPersonalEvent = event;
+    }
+  }
+  prepared.pendingEvent = null;
+  const opened = beginYearPlanning(prepared);
+  if (!opened.success) return opened;
+  opened.state.turnPhase = "action";
+  return {
+    state: opened.state,
+    success: true,
+    message: "普通行动阶段已开始：职业、学习、收入、投资、家庭与健康都在争夺同一份时间。",
+  };
+}
+
+export function finishOrdinaryActionPhase(state: GameState): ActionResult {
+  if (state.turnPhase !== "action" || state.yearPhase !== "planning") {
+    return { state, success: false, message: "当前不是普通行动阶段。" };
+  }
+  const next = copyState(state);
+  next.turnPhase = "interaction";
+  next.lastCard = {
+    eyebrow: `${getPeriodLabel(next)} · 玩家互动`,
+    title: "行动不会发生在真空里",
+    narrative: "同桌角色有自己的目标、资源和底线。你可以求助、先提供帮助、提出联合项目或重谈边界，也可以保持独立。",
+    tags: ["玩家互动", "关系记忆", "合同边界"],
+  };
+  return { state: next, success: true, message: "进入玩家互动阶段。" };
+}
+
+export function finishPlayerInteractionPhase(state: GameState): ActionResult {
+  if (state.turnPhase !== "interaction" || state.yearPhase !== "planning") {
+    return { state, success: false, message: "当前不是玩家互动阶段。" };
+  }
+  const committed = commitYearPlan(state);
+  if (!committed.success) return committed;
+  const summarized = skipYearReveals(committed.state);
+  if (!summarized.success) return summarized;
+  summarized.state.turnPhase = "macro";
+  summarized.state.macroEvent = createMacroEvent(summarized.state);
+  summarized.state.lastCard = {
+    eyebrow: `${getPeriodLabel(summarized.state)} · 宏观公共事件`,
+    title: summarized.state.macroEvent.title,
+    narrative: summarized.state.macroEvent.narrative,
+    tags: ["宏观", summarized.state.world.cycle, ...summarized.state.macroEvent.affected.slice(0, 2)],
+  };
+  return { state: summarized.state, success: true, message: "行动已由规则引擎裁决，宏观事件牌翻开。" };
+}
+
+export function resolveMacroEventPhase(state: GameState, choiceId: string): ActionResult {
+  if (state.turnPhase !== "macro") {
+    return { state, success: false, message: "当前没有等待回应的宏观事件。" };
+  }
+  const card = state.macroEvent ?? createMacroEvent(state);
+  const choice = card.choices.find((item) => item.id === choiceId);
+  if (!choice) return { state, success: false, message: "未找到这项宏观应对策略。" };
+  const cashNeed = Math.max(1, Math.abs(choice.effects.cash ?? 0));
+  const resourceAdequacy = clamp((state.cash / cashNeed + state.energy / 70) / 3, 0, 1);
+  const [snapshot, rolled] = probabilitySnapshot(
+    state,
+    `${card.title}：${choice.label}`,
+    choice.baseProbability,
+    [],
+    resourceAdequacy,
+  );
+  let next = applyEffects(rolled, choice.effects);
+  next = applyEffects(next, snapshot.success ? choice.successEffects : choice.failureEffects);
+  next = addKnowledge(next, choice.knowledgeTags);
+  next = addMemory(next, [...choice.memoryTags, `宏观:${state.world.cycle}`]);
+  const outcome = snapshot.success
+    ? `你的应对在当前周期中奏效，但投入与机会成本仍然保留。`
+    : `这次应对没有达到预期；资源准备、周期逆风和随机扰动共同形成了结果。`;
+  next = finalizeActionCard(
+    next,
+    snapshot,
+    "宏观事件 · 已回应",
+    card.title,
+    choice.description,
+    ["宏观", choice.risk + "风险", ...choice.knowledgeTags],
+    outcome,
+  );
+  next = addHistory(next, {
+    type: "event",
+    title: `${card.title} · ${choice.label}`,
+    description: outcome,
+    cashDelta: (choice.effects.cash ?? 0) + (snapshot.success ? choice.successEffects.cash ?? 0 : choice.failureEffects.cash ?? 0),
+    tags: ["宏观", state.world.cycle, ...choice.knowledgeTags],
+  });
+  next.turnPhase = "personal";
+  next.pendingEvent = next.queuedPersonalEvent;
+  next.queuedPersonalEvent = null;
+  return { state: next, success: true, message: "宏观事件已记录，进入个人与关系事件。" };
+}
+
+export function resolvePersonalEventPhase(state: GameState, choiceId: string): ActionResult {
+  if (state.turnPhase !== "personal") {
+    return { state, success: false, message: "当前不是个人与关系事件阶段。" };
+  }
+  const resolved = resolvePendingEvent(state, choiceId);
+  if (!resolved.success) return resolved;
+  resolved.state.turnPhase = "settlement";
+  return { state: resolved.state, success: true, message: "个人事件已进入人生记忆，准备统一结算。" };
+}
+
+export function skipEmptyPersonalEventPhase(state: GameState): ActionResult {
+  if (state.turnPhase !== "personal" || state.pendingEvent) {
+    return { state, success: false, message: "仍有个人事件需要处理。" };
+  }
+  const next = copyState(state);
+  next.turnPhase = "settlement";
+  return { state: next, success: true, message: "本期没有额外个人事件，进入统一结算。" };
+}
+
+export function settleTurnPhase(state: GameState): ActionResult {
+  if (state.turnPhase !== "settlement") {
+    return { state, success: false, message: "当前还不能进行资产与状态结算。" };
+  }
+  const settled = advanceTurn(state);
+  if (!settled.success || settled.state.phase === "review") return settled;
+  settled.state.turnPhase = "learning";
+  settled.state.macroEvent = null;
+  settled.state.queuedPersonalEvent = null;
+  return { state: settled.state, success: true, message: "资产与状态已结算，进入本期学习反馈。" };
+}
+
+export function continueAfterLearningPhase(state: GameState): ActionResult {
+  if (state.turnPhase !== "learning") {
+    return { state, success: false, message: "请先查看本期学习反馈。" };
+  }
+  let next = copyState(state);
+  if (next.yearPhase === "chapter") {
+    const continued = continueAfterChapter(next);
+    if (!continued.success) return continued;
+    next = continued.state;
+  }
+  next.turnPhase = "world";
+  next.macroEvent = null;
+  next.lastCard = {
+    eyebrow: `${getStateChapterName(next)} · 世界与个人状态`,
+    title: next.annualBriefing.headline,
+    narrative: next.annualBriefing.cityNews,
+    outcome: next.annualBriefing.riskNote,
+    tags: [next.annualBriefing.chapter, next.world.cycle, "世界观察"],
+  };
+  return { state: next, success: true, message: `进入${getPeriodLabel(next)}，先观察世界与个人状态。` };
 }
 
 export function generateReview(state: GameState): ReviewReport {

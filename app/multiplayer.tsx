@@ -317,9 +317,11 @@ export default function MultiplayerScreen({
               {room?.phase === "lobby"
                 ? "等待同桌入席"
                 : room?.phase === "planning"
-                  ? "所有人同时规划"
+                  ? "普通行动 · 隐藏提交"
                   : room?.phase === "negotiation"
-                    ? "结果揭晓 · 谈判窗口"
+                    ? "玩家互动 · 合同窗口"
+                    : room?.phase === "learning"
+                      ? "共同揭晓 · 学习反馈"
                     : room?.phase === "complete"
                       ? "这局共同人生已经结束"
                       : "正在统一结算"}
@@ -327,11 +329,48 @@ export default function MultiplayerScreen({
           </div>
           {room && room.phase !== "lobby" && room.phase !== "complete" && (
             <div className="multi-timer">
-              <span>{room.phase === "planning" ? "规划剩余" : "谈判窗口"}</span>
+              <span>{room.phase === "planning" ? "行动剩余" : room.phase === "learning" ? "反馈剩余" : "互动窗口"}</span>
               <b>{Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}</b>
             </div>
           )}
         </section>
+
+        {room && room.phase !== "lobby" && room.phase !== "complete" && (
+          <section className="multi-life-shell" aria-label="多人共同人生棋盘">
+            <div className="multi-life-board">
+              <header>
+                <div><span className="micro-label">共同人生路线棋盘</span><h2>同一座城，各自承担选择的代价</h2></div>
+                <span className="multi-world-chip">{room.worldEvent.title}</span>
+              </header>
+              <div className="multi-route-lanes">
+                {room.players.map((player) => (
+                  <article key={player.id} className={player.id === session.playerId ? "is-self" : ""}>
+                    <div className="multi-route-person"><i>{player.name.slice(0, 1)}</i><span><b>{player.name}</b><small>{player.control === "ai" ? "AI 延续人生" : player.online ? "真人在线" : "等待重连"}</small></span></div>
+                    <div className="multi-route-track">
+                      {Array.from({ length: 4 }, (_, index) => {
+                        const milestone = Math.min(3, Math.floor(((room.turn - 1) / Math.max(1, room.maxTurns - 1)) * 4));
+                        return <i className={index <= milestone ? "is-reached" : ""} key={index}>{index === milestone ? "你" : ""}</i>;
+                      })}
+                    </div>
+                    <dl><span><small>现金</small>{formatMoney(player.cash)}</span><span><small>月收入</small>{formatMoney(player.monthlyIncome)}</span><span><small>信任</small>{Math.round(player.trust)}</span></dl>
+                  </article>
+                ))}
+              </div>
+            </div>
+            <aside className="multi-cash-console">
+              <span className="micro-label">我的现金流控制台</span>
+              <h2>{self?.name ?? "当前席位"}</h2>
+              <dl>
+                <div><dt>可用现金</dt><dd>{formatMoney(self?.cash ?? 0)}</dd></div>
+                <div><dt>净资产</dt><dd>{formatMoney(self?.netWorth ?? 0)}</dd></div>
+                <div><dt>月主动收入</dt><dd>{formatMoney(self?.monthlyIncome ?? 0)}</dd></div>
+                <div><dt>月固定支出</dt><dd>{formatMoney(self?.monthlyExpense ?? 0)}</dd></div>
+              </dl>
+              <div><span>共同信任</span><b>{Math.round(self?.trust ?? 0)} / 100</b><i><em style={{ width: `${self?.trust ?? 0}%` }} /></i></div>
+              <p>{room.worldEvent.description}</p>
+            </aside>
+          </section>
+        )}
 
         <section className="multi-seats" aria-label="房间玩家">
           {room?.players.map((player) => (
@@ -347,7 +386,7 @@ export default function MultiplayerScreen({
                     ? "AI 接管中"
                     : player.online
                       ? player.submitted
-                        ? "计划已锁定"
+                        ? "行动已锁定"
                         : "在线思考"
                       : "等待重连"}
                 </small>
@@ -380,7 +419,7 @@ export default function MultiplayerScreen({
                 disabled={busy || room.players.length < 2}
                 onClick={() => void act("start")}
               >
-                开始同时规划 <span>→</span>
+                开始共同人生 <span>→</span>
               </button>
             ) : <strong>等待房主开始…</strong>}
           </section>
@@ -389,14 +428,14 @@ export default function MultiplayerScreen({
         {room?.phase === "planning" && (
           <>
             <section className="multi-world-event">
-              <span>共同宏观事件</span>
+              <span>01 · 已知世界状态</span>
               <h2>{room.worldEvent.title}</h2>
               <p>{room.worldEvent.description}</p>
             </section>
             <section className="multi-planning">
               <header>
                 <div>
-                  <span className="micro-label">你的秘密计划</span>
+                  <span className="micro-label">02 · 普通行动</span>
                   <h2>选择 1–3 项行动，提交前对手不可见</h2>
                 </div>
                 <strong>{plannedTime}/8 点 · {formatMoney(plannedCash)}</strong>
@@ -423,7 +462,7 @@ export default function MultiplayerScreen({
                 disabled={busy || Boolean(self?.submitted) || activeSelected.length < 1}
                 onClick={() => void act("submit_plan", { plan: activeSelected.map((item) => ({ id: item.id })) })}
               >
-                {self?.submitted ? "计划已锁定，等待同桌" : "锁定本回合计划"} <span>→</span>
+                {self?.submitted ? "行动已锁定，等待同桌" : "完成普通行动"} <span>→</span>
               </button>
             </section>
           </>
@@ -431,37 +470,10 @@ export default function MultiplayerScreen({
 
         {room?.phase === "negotiation" && (
           <>
-            <section className="multi-reveals">
-              <header>
-                <span className="micro-label">共同揭晓</span>
-                <h2>同一个世界，不同的准备与结果</h2>
-              </header>
-              <div>
-                {room.reveals.map((reveal) => (
-                  <article key={reveal.playerId}>
-                    <header>
-                      <b>{reveal.playerName}</b>
-                      <strong className={reveal.totalCashDelta >= 0 ? "is-positive" : "is-negative"}>
-                        {formatSignedMoney(reveal.totalCashDelta)}
-                      </strong>
-                    </header>
-                    {reveal.outcomes.map((outcome) => (
-                      <div key={outcome.actionId}>
-                        <span className={outcome.success ? "is-success" : "is-failure"}>
-                          {outcome.success ? "成" : "变"}
-                        </span>
-                        <p><b>{outcome.label}</b><small>{outcome.narrative}</small></p>
-                        <em>{Math.round(outcome.probability * 100)}%</em>
-                      </div>
-                    ))}
-                  </article>
-                ))}
-              </div>
-            </section>
             <section className="multi-negotiation">
               <div className="multi-trade-form">
-                <span className="micro-label">谈判与交易</span>
-                <h2>现金不是礼物，条件必须写清楚</h2>
+                <span className="micro-label">03 · 玩家互动</span>
+                <h2>结果揭晓前，先把合作边界写清楚</h2>
                 <label>
                   <span>交易对象</span>
                   <select value={tradeTarget} onChange={(event) => setTradeTarget(event.target.value)}>
@@ -523,7 +535,7 @@ export default function MultiplayerScreen({
             </section>
             {isHost ? (
               <button className="multi-primary multi-next" disabled={busy} onClick={() => void act("advance")}>
-                结束谈判并统一结算 <span>→</span>
+                结束互动 · 翻开事件与结果 <span>→</span>
               </button>
             ) : <p className="multi-waiting">等待房主结束谈判窗口…</p>}
           </>
@@ -535,6 +547,46 @@ export default function MultiplayerScreen({
             <h2>正在统一结算所有人的现金流</h2>
             <p>行动结果、交易和三个月收支只会结算一次。</p>
           </section>
+        )}
+
+        {room?.phase === "learning" && (
+          <>
+            <section className="multi-world-event multi-world-event--revealed">
+              <span>04 · 宏观影响</span>
+              <h2>{room.worldEvent.title}</h2>
+              <p>{room.worldEvent.description}</p>
+            </section>
+            <section className="multi-reveals">
+              <header>
+                <span className="micro-label">05–07 · 个人结果、统一结算与学习反馈</span>
+                <h2>同一个世界，不同的准备与结果</h2>
+              </header>
+              <div>
+                {room.reveals.map((reveal) => (
+                  <article key={reveal.playerId}>
+                    <header>
+                      <b>{reveal.playerName}</b>
+                      <strong className={reveal.totalCashDelta >= 0 ? "is-positive" : "is-negative"}>
+                        {formatSignedMoney(reveal.totalCashDelta)}
+                      </strong>
+                    </header>
+                    {reveal.outcomes.map((outcome) => (
+                      <div key={outcome.actionId}>
+                        <span className={outcome.success ? "is-success" : "is-failure"}>{outcome.success ? "成" : "变"}</span>
+                        <p><b>{outcome.label}</b><small>{outcome.narrative}</small></p>
+                        <em>{Math.round(outcome.probability * 100)}%</em>
+                      </div>
+                    ))}
+                  </article>
+                ))}
+              </div>
+            </section>
+            {isHost ? (
+              <button className="multi-primary multi-next" disabled={busy} onClick={() => void act("advance")}>
+                完成本回合 · 返回世界观察 <span>→</span>
+              </button>
+            ) : <p className="multi-waiting">等待房主开始下一回合…</p>}
+          </>
         )}
 
         {room?.phase === "complete" && (

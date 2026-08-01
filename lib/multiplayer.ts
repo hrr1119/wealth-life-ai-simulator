@@ -3,6 +3,7 @@ export type MultiplayerPhase =
   | "planning"
   | "negotiation"
   | "settlement"
+  | "learning"
   | "complete";
 
 export interface MultiplayerPlanItem {

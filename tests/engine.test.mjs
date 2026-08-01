@@ -8,15 +8,22 @@ import {
   buyAsset,
   commitYearPlan,
   continueAfterChapter,
+  continueAfterLearningPhase,
   createGame,
+  enterOrdinaryActionPhase,
+  finishOrdinaryActionPhase,
+  finishPlayerInteractionPhase,
   getNetWorth,
   learnSkill,
   revealNextResult,
   resolvePendingEvent,
+  resolveMacroEventPhase,
+  resolvePersonalEventPhase,
   scheduleAIInteraction,
   scheduleDeepAction,
   scheduleLifeAction,
   scheduleSkill,
+  settleTurnPhase,
   seededRandom,
   skipYearReveals,
 } from "../lib/engine.ts";
@@ -217,6 +224,42 @@ test("annual planning defers action effects until the plan is locked", () => {
   assert.ok(committed.state.cash < initial.cash);
   assert.equal(committed.state.reveals.length, 2);
   assert.equal(committed.state.reveals[0].title, "先守住正在承担的责任");
+});
+
+test("the product-spec turn visits all seven distinct gameplay phases", () => {
+  let state = createGame({ mode: "quick", theme: "emerald", roleId: "steady", seed: 515151 });
+  assert.equal(state.turnPhase, "world");
+
+  state = enterOrdinaryActionPhase(state).state;
+  assert.equal(state.turnPhase, "action");
+  assert.ok(state.queuedPersonalEvent, "the personal event is held until its documented phase");
+  assert.equal(state.pendingEvent, null);
+
+  state = scheduleSkill(state, "writing").state;
+  state = finishOrdinaryActionPhase(state).state;
+  assert.equal(state.turnPhase, "interaction");
+  state = scheduleAIInteraction(state, state.aiPlayers[0].id, "offer_help").state;
+
+  state = finishPlayerInteractionPhase(state).state;
+  assert.equal(state.turnPhase, "macro");
+  assert.ok(state.macroEvent);
+  assert.equal(state.yearPhase, "consequence", "ordinary actions are already rule-resolved before public events");
+
+  state = resolveMacroEventPhase(state, state.macroEvent.choices[0].id).state;
+  assert.equal(state.turnPhase, "personal");
+  assert.ok(state.pendingEvent);
+
+  state = resolvePersonalEventPhase(state, state.pendingEvent.event.choices[0].id).state;
+  assert.equal(state.turnPhase, "settlement");
+
+  state = settleTurnPhase(state).state;
+  assert.equal(state.turnPhase, "learning");
+  assert.ok(state.history.some((entry) => entry.type === "settlement"));
+  assert.ok(state.history.some((entry) => entry.tags.includes("宏观")));
+
+  state = continueAfterLearningPhase(state).state;
+  assert.equal(state.turnPhase, "world");
+  assert.equal(state.turn, 2);
 });
 
 test("deep life unlocks a real 240-quarter model with long-term systems", () => {

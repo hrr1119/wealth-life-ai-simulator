@@ -2,6 +2,14 @@ export type ModeId = "quick" | "standard" | "deep";
 export type TimeScale = "year" | "quarter";
 export type ThemeId = "emerald" | "midnight" | "paper" | "terracotta";
 export type YearPhase = "opening" | "planning" | "reveal" | "consequence" | "chapter";
+export type TurnPhase =
+  | "world"
+  | "action"
+  | "interaction"
+  | "macro"
+  | "personal"
+  | "settlement"
+  | "learning";
 export type ActionCategory =
   | "career"
   | "learning"
@@ -235,6 +243,29 @@ export interface PendingEvent {
   source: "turn" | "chain";
 }
 
+export interface MacroEventChoice {
+  id: string;
+  label: string;
+  description: string;
+  risk: RiskLevel;
+  baseProbability: number;
+  effects: NumericEffects;
+  successEffects: NumericEffects;
+  failureEffects: NumericEffects;
+  knowledgeTags: string[];
+  memoryTags: string[];
+}
+
+export interface MacroEventCard {
+  id: string;
+  type: "宏观";
+  title: string;
+  narrative: string;
+  background: string;
+  affected: string[];
+  choices: MacroEventChoice[];
+}
+
 export type PlannedActionKind =
   | "core"
   | "skill"
@@ -392,9 +423,10 @@ export interface QuestState {
 }
 
 export interface GameState {
-  version: 3;
+  version: 4;
   phase: "playing" | "review";
   yearPhase: YearPhase;
+  turnPhase: TurnPhase;
   mode: ModeId;
   timeScale: TimeScale;
   actionBudget: number;
@@ -437,6 +469,8 @@ export interface GameState {
   quests: QuestState[];
   chainProgress: Record<string, number>;
   pendingEvent: PendingEvent | null;
+  queuedPersonalEvent: PendingEvent | null;
+  macroEvent: MacroEventCard | null;
   lastCard: {
     eyebrow: string;
     title: string;
