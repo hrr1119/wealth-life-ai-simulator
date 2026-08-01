@@ -226,21 +226,21 @@ export default function MultiplayerScreen({
       <div className="multiplayer-page" data-theme={theme}>
         <header className="multiplayer-topbar">
           <button onClick={onExit} className="multi-back">← 单人人生</button>
-          <span>2–4 人 · 同时规划 · 真实网络房间</span>
+          <span>2–4 人 · 七阶段共同行动 · 真实网络房间</span>
         </header>
         <main className="multi-entry">
           <section className="multi-entry__story">
             <span className="micro-label">财富人生 · 多人实验室</span>
             <h1>不再轮流等，<br /><strong>一起做决定。</strong></h1>
             <p>
-              每个人同时安排本回合行动，一起揭晓宏观事件，再进入借款、合作和交易窗口。
-              断线席位会由 AI 接管，原玩家回来后可继续控制。
+              每个人先秘密完成普通行动，再进入借款、合作和交易窗口；互动结束后才会统一翻开宏观影响、
+              个人结果和学习反馈。断线席位会由 AI 接管，原玩家回来后可继续控制。
             </p>
             <div>
-              <span><b>01</b>同时规划</span>
-              <span><b>02</b>共同揭晓</span>
-              <span><b>03</b>谈判交易</span>
-              <span><b>04</b>统一结算</span>
+              <span><b>01</b>世界观察</span>
+              <span><b>02</b>普通行动</span>
+              <span><b>03</b>玩家互动</span>
+              <span><b>04</b>揭晓与学习</span>
             </div>
           </section>
           <section className="multi-entry__card">
