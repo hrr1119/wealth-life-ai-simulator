@@ -55,7 +55,8 @@ function currentStateSignals(state: GameState): string[] {
   if (portfolio.highRiskShare > 0.5) result.push("高风险资产暴露");
   if (state.debt > state.cash) result.push("负债压力");
   if (state.aiPlayers.some((player) => player.trust >= 68)) result.push("可信关系");
-  if (state.deep?.family.partnered) result.push("共同家庭");
+  if (state.familyLedger.stage !== "independent" || state.deep?.family.partnered) result.push("共同家庭");
+  if (state.familyLedger.responsibilities.some((item) => item.type === "eldercare" && item.status === "active")) result.push("代际照护");
   if (state.deep?.business.active) result.push("企业经营");
   return unique(result);
 }

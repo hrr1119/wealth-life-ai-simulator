@@ -1509,6 +1509,14 @@ button.board-node:hover {
   border-left: 1px solid var(--line);
 }
 
+.console-actions button:nth-child(odd) {
+  border-left: 0;
+}
+
+.console-actions button:nth-child(n + 3) {
+  border-top: 1px solid var(--line);
+}
+
 .console-actions button:hover {
   background: var(--surface-soft);
 }
@@ -3688,6 +3696,184 @@ button.board-node:hover {
   margin: 0;
 }
 
+.ai-decision-reason {
+  background: var(--surface-soft);
+  border-left: 2px solid var(--accent);
+  line-height: 1.55;
+  margin-top: 7px !important;
+  padding: 6px 8px;
+}
+
+.family-summary,
+.portfolio-diagnostics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.family-summary article {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.family-summary span,
+.family-summary small {
+  color: var(--subtle);
+  font-size: 7px;
+}
+
+.family-summary b {
+  color: var(--ink-strong);
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+
+.family-pressure-note {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-left: 2px solid var(--accent);
+  color: var(--muted);
+  font-size: 8px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+}
+
+.responsibility-list,
+.family-decisions,
+.contract-book {
+  display: grid;
+  gap: 8px;
+}
+
+.responsibility-list article {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  font-size: 8px;
+  gap: 10px;
+  grid-template-columns: 1fr 100px 85px 60px;
+  padding: 10px 12px;
+}
+
+.responsibility-list article > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.responsibility-list small,
+.responsibility-list em {
+  color: var(--subtle);
+  font-size: 7px;
+}
+
+.responsibility-list em {
+  color: var(--accent);
+  font-style: normal;
+  text-align: right;
+}
+
+.family-decisions article {
+  background: var(--surface-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+}
+
+.family-decisions span,
+.family-decisions p {
+  color: var(--subtle);
+  font-size: 7px;
+  margin: 0;
+}
+
+.family-decisions b {
+  font-size: 8px;
+}
+
+.contract-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--subtle);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.contract-card--active {
+  border-left-color: var(--accent);
+}
+
+.contract-card--completed {
+  border-left-color: var(--positive);
+}
+
+.contract-card--breached,
+.contract-card--rejected {
+  border-left-color: var(--negative);
+}
+
+.contract-card header,
+.contract-card footer {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.contract-card header span,
+.contract-card header b,
+.contract-card small,
+.contract-card p,
+.contract-records span {
+  color: var(--subtle);
+  font-size: 7px;
+}
+
+.contract-card header b {
+  color: var(--accent);
+}
+
+.contract-card h3 {
+  font-family: var(--font-display);
+  font-size: 14px;
+  margin: 7px 0;
+}
+
+.contract-card p {
+  margin: 3px 0;
+}
+
+.contract-records {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 3px;
+  margin-top: 9px;
+  padding-top: 7px;
+}
+
+.contract-card footer {
+  gap: 6px;
+  justify-content: flex-start;
+  margin-top: 9px;
+}
+
+.contract-card footer button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--accent);
+  font-size: 7px;
+  padding: 6px 9px;
+}
+
+.contract-card footer button:hover {
+  border-color: var(--accent);
+}
+
 .modal-footnote {
   border-top: 1px solid var(--line);
   color: var(--subtle);
@@ -4703,8 +4889,13 @@ button.board-node:hover {
   }
 
   .portfolio-strip,
-  .portfolio-diagnostics {
+  .portfolio-diagnostics,
+  .family-summary {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .responsibility-list article {
+    grid-template-columns: 1fr auto;
   }
 
   .ledger-table > div,

@@ -36,6 +36,7 @@ import {
   scheduleAsset,
   scheduleAssetSale,
   scheduleCareer,
+  scheduleContractAction,
   scheduleDeepAction,
   scheduleLifeAction,
   scheduleOpportunity,
@@ -53,6 +54,7 @@ import {
   getSkillPrerequisites,
   getUnmetSkillPrerequisites,
 } from "@/lib/progression";
+import { getFamilyPressure } from "@/lib/relationships";
 import { generateOpportunityCards } from "@/lib/opportunity";
 import MultiplayerScreen from "@/app/multiplayer";
 import type {
@@ -74,6 +76,7 @@ type ModalName =
   | "ledger"
   | "knowledge"
   | "network"
+  | "family"
   | "audit"
   | "help"
   | null;
@@ -506,10 +509,14 @@ function FinanceConsole({
   state,
   onOpenLedger,
   onOpenKnowledge,
+  onOpenNetwork,
+  onOpenFamily,
 }: {
   state: GameState;
   onOpenLedger: () => void;
   onOpenKnowledge: () => void;
+  onOpenNetwork: () => void;
+  onOpenFamily: () => void;
 }) {
   const netWorth = getNetWorth(state);
   const emergency = getEmergencyMonths(state);
@@ -581,6 +588,8 @@ function FinanceConsole({
       <div className="console-actions">
         <button onClick={onOpenLedger}>资产负债表 <span>↗</span></button>
         <button onClick={onOpenKnowledge}>本局知识库 <span>{state.revealedKnowledge.length}</span></button>
+        <button onClick={onOpenFamily}>家庭责任账本 <span>{state.familyLedger.responsibilities.filter((item) => item.status === "active").length}</span></button>
+        <button onClick={onOpenNetwork}>关系与合同 <span>{state.contracts.filter((item) => item.status === "active").length}</span></button>
       </div>
     </aside>
   );
@@ -1332,12 +1341,14 @@ function InfoModal({
   onClose,
   onAIInteraction,
   onAssetSale,
+  onContractAction,
 }: {
-  type: "ledger" | "knowledge" | "network" | "audit" | "help";
+  type: "ledger" | "knowledge" | "network" | "family" | "audit" | "help";
   state: GameState;
   onClose: () => void;
   onAIInteraction?: (playerId: string, interactionId: string) => void;
   onAssetSale?: (assetId: string, fraction: 0.25 | 1) => void;
+  onContractAction?: (contractId: string, action: "fulfill" | "exit") => void;
 }) {
   if (type === "ledger") {
     const portfolio = getPortfolioDiagnostics(state);
@@ -1452,6 +1463,45 @@ function InfoModal({
       </BaseModal>
     );
   }
+  if (type === "family") {
+    const pressure = getFamilyPressure(state.familyLedger);
+    const stageNames = {
+      independent: "独立财务",
+      partnered: "共同家庭",
+      caregiving: "代际照护",
+      parenting: "育儿阶段",
+      multigenerational: "多代责任",
+    } as const;
+    return (
+      <BaseModal eyebrow="家庭责任账本" title="爱与责任也需要现金、时间和边界" onClose={onClose} wide>
+        <div className="family-summary">
+          <article><span>家庭阶段</span><b>{stageNames[state.familyLedger.stage]}</b><small>阶段来自真实行动与事件</small></article>
+          <article><span>家庭信任</span><b>{Math.round(state.familyLedger.trust)}</b><small>透明沟通与履约共同积累</small></article>
+          <article><span>责任负荷</span><b>{Math.round(pressure.pressureScore)}</b><small>{pressure.activeCount} 项持续责任</small></article>
+          <article><span>共同现金</span><b>{formatMoney(state.familyLedger.sharedCash)}</b><small>不等于玩家可随意支配现金</small></article>
+        </div>
+        <p className="family-pressure-note">{pressure.warning}</p>
+        <h3 className="section-title">持续责任</h3>
+        <div className="responsibility-list">
+          {state.familyLedger.responsibilities.length ? state.familyLedger.responsibilities.map((responsibility) => (
+            <article key={responsibility.id}>
+              <span><b>{responsibility.title}</b><small>{responsibility.owner === "shared" ? "共同承担" : "由你承担"} · {responsibility.priority}</small></span>
+              <span>{formatMoney(responsibility.cashPerPeriod)} / 期</span>
+              <span>{responsibility.timePerPeriod} 点关注</span>
+              <em>{responsibility.status === "active" ? "持续中" : responsibility.status === "paused" ? "已暂停" : "已完成"}</em>
+            </article>
+          )) : <p className="empty-note">当前尚未建立共同财务、保障、育儿或照护责任。家庭路线会由实际选择开始生长。</p>}
+        </div>
+        <h3 className="section-title">家庭决策记录</h3>
+        <div className="family-decisions">
+          {state.familyLedger.decisions.slice(-8).reverse().map((decision) => (
+            <article key={decision.id}><span>第 {decision.turn} 期 · {decision.title}</span><b>{decision.choice}</b><p>{decision.outcome} · 信任 {decision.trustDelta >= 0 ? "+" : ""}{decision.trustDelta}</p></article>
+          ))}
+          {!state.familyLedger.decisions.length && <p className="empty-note">还没有家庭共同决策记录。</p>}
+        </div>
+      </BaseModal>
+    );
+  }
   if (type === "network") {
     return (
       <BaseModal eyebrow="单机 AI 同桌" title="他们有自己的目标，也会拒绝、竞争和改变策略" onClose={onClose}>
@@ -1464,12 +1514,15 @@ function InfoModal({
                 <h3>{player.name}</h3>
                 <p>目标：{player.goal}</p>
                 <small>当前行动：{player.currentMove}</small>
+                {player.lastDecision && <p className="ai-decision-reason">判断理由：{player.lastDecision.reason}</p>}
                 <p className="character-trait">{player.personality}</p>
                 <small>底线：{player.boundary}</small>
               </div>
               <dl>
                 <div><dt>信任</dt><dd>{player.trust}</dd></div>
                 <div><dt>现金</dt><dd>{formatCompactMoney(player.cash)}</dd></div>
+                <div><dt>收入</dt><dd>{formatCompactMoney(player.monthlyIncome)}</dd></div>
+                <div><dt>压力</dt><dd>{Math.round(player.stress)}</dd></div>
               </dl>
               <div className="character-memory">
                 <span>长期记忆</span>
@@ -1491,6 +1544,25 @@ function InfoModal({
               )}
             </article>
           ))}
+        </div>
+        <h3 className="section-title">合同簿</h3>
+        <div className="contract-book">
+          {state.contracts.length ? state.contracts.slice().reverse().map((contract) => (
+            <article key={contract.id} className={`contract-card contract-card--${contract.status}`}>
+              <header><span>{contract.type === "joint_project" ? "联合项目" : contract.type}</span><b>{contract.status === "active" ? "生效中" : contract.status === "rejected" ? "已拒绝" : contract.status === "completed" ? "已完成" : contract.status === "breached" ? "已违约" : "已终止"}</b></header>
+              <h3>{contract.title}</h3>
+              <p>你的义务：{contract.playerDuty}</p>
+              <p>对方义务：{contract.counterpartyDuty}</p>
+              <small>下次履约：第 {contract.nextDueTurn} 期 · 退出成本 {formatMoney(contract.exitCost)}</small>
+              <div className="contract-records">{contract.records.slice(-3).map((record, index) => <span key={`${record.turn}-${record.action}-${index}`}>第 {record.turn} 期 · {record.detail}</span>)}</div>
+              {contract.status === "active" && state.turnPhase === "action" && (
+                <footer>
+                  <button onClick={() => onContractAction?.(contract.id, "fulfill")}>加入本期履约计划</button>
+                  <button onClick={() => onContractAction?.(contract.id, "exit")}>按条款退出</button>
+                </footer>
+              )}
+            </article>
+          )) : <p className="empty-note">尚未形成正式合同。联合项目只有被对方接受后才会进入合同簿。</p>}
         </div>
         <p className="modal-footnote">
           角色会依据目标、信任、财务状态与底线独立回应；互动会进入长期记忆，不是固定加成。
@@ -1778,7 +1850,13 @@ function GameScreen({
       <main className="game-main">
         <div className="game-grid">
           <Board state={state} onOpportunity={() => setModal("opportunity")} />
-          <FinanceConsole state={state} onOpenLedger={() => setModal("ledger")} onOpenKnowledge={() => setModal("knowledge")} />
+          <FinanceConsole
+            state={state}
+            onOpenLedger={() => setModal("ledger")}
+            onOpenKnowledge={() => setModal("knowledge")}
+            onOpenFamily={() => setModal("family")}
+            onOpenNetwork={() => setModal("network")}
+          />
         </div>
         {state.deep && <DeepSystems state={state} onOpen={() => setModal("deep")} />}
         <StoryStage
@@ -1815,13 +1893,14 @@ function GameScreen({
       {modal === "opportunity" && (
         <OpportunityModal state={state} onClose={() => setModal(null)} onChoose={(card) => applyResult(scheduleOpportunity(state, card))} />
       )}
-      {(modal === "ledger" || modal === "knowledge" || modal === "network" || modal === "audit" || modal === "help") && (
+      {(modal === "ledger" || modal === "knowledge" || modal === "network" || modal === "family" || modal === "audit" || modal === "help") && (
         <InfoModal
           type={modal}
           state={state}
           onClose={() => setModal(null)}
           onAIInteraction={(playerId, interactionId) => applyResult(scheduleAIInteraction(state, playerId, interactionId))}
           onAssetSale={(assetId, fraction) => applyResult(scheduleAssetSale(state, assetId, fraction))}
+          onContractAction={(contractId, action) => applyResult(scheduleContractAction(state, contractId, action))}
         />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}

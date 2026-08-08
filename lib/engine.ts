@@ -23,6 +23,13 @@ import {
   getSkillSynergyBonus,
   getUnmetSkillPrerequisites,
 } from "./progression.ts";
+import {
+  createFamilyLedger,
+  createRelationshipContract,
+  decideAIPlayerTurn,
+  recordFamilyAction,
+  recordFamilyEvent,
+} from "./relationships.ts";
 import type {
   ActionResult,
   AnnualBriefing,
@@ -422,7 +429,21 @@ function copyState(state: GameState): GameState {
     chainProgress: { ...state.chainProgress },
     audits: [...state.audits],
     history: [...state.history],
-    aiPlayers: state.aiPlayers.map((player) => ({ ...player, memories: [...player.memories] })),
+    aiPlayers: state.aiPlayers.map((player) => ({
+      ...player,
+      memories: [...player.memories],
+      lastDecision: player.lastDecision ? { ...player.lastDecision } : null,
+      decisionHistory: player.decisionHistory.map((decision) => ({ ...decision })),
+    })),
+    familyLedger: {
+      ...state.familyLedger,
+      responsibilities: state.familyLedger.responsibilities.map((item) => ({ ...item })),
+      decisions: state.familyLedger.decisions.map((item) => ({ ...item })),
+    },
+    contracts: state.contracts.map((contract) => ({
+      ...contract,
+      records: contract.records.map((record) => ({ ...record })),
+    })),
     careerHistory: [...state.careerHistory],
     deep: state.deep
       ? {
@@ -625,8 +646,28 @@ function normalizeAIPlayers(players: GameState["aiPlayers"] | undefined, seed: n
       debt: player.debt ?? base.debt,
       trust: player.trust ?? player.relationship ?? base.trust,
       memories: [...(player.memories ?? ["第一次同桌"])],
+      strategy: player.strategy ?? base.strategy,
+      energy: player.energy ?? base.energy,
+      stress: player.stress ?? base.stress,
+      lastDecision: player.lastDecision ? { ...player.lastDecision } : null,
+      decisionHistory: (player.decisionHistory ?? []).map((decision) => ({ ...decision })),
     };
   });
+}
+
+function normalizeFamilyLedger(state: GameState): GameState["familyLedger"] {
+  if (state.familyLedger) {
+    return {
+      ...state.familyLedger,
+      responsibilities: (state.familyLedger.responsibilities ?? []).map((item) => ({ ...item })),
+      decisions: (state.familyLedger.decisions ?? []).map((item) => ({ ...item })),
+    };
+  }
+  let ledger = createFamilyLedger();
+  if (state.deep?.family.partnered) ledger = recordFamilyAction(ledger, "build_family", state.turn, true);
+  if (state.deep?.family.children.length) ledger = recordFamilyAction(ledger, "build_family", state.turn, true);
+  if ((state.deep?.family.parentCareLevel ?? 0) > 0) ledger = recordFamilyAction(ledger, "care_parents", state.turn, true);
+  return ledger;
 }
 
 export function upgradeGameState(input: GameState | Record<string, unknown>): GameState | null {
@@ -643,7 +684,7 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
           : "world");
   const upgraded = {
     ...legacy,
-    version: 5,
+    version: 6,
     timeScale: legacy.timeScale ?? "year",
     actionBudget: legacy.actionBudget ?? 8,
     age: legacy.age ?? 24 + Math.max(0, getLifeYear({
@@ -673,6 +714,11 @@ export function upgradeGameState(input: GameState | Record<string, unknown>): Ga
     queuedPersonalEvent: legacy.queuedPersonalEvent ?? null,
     macroEvent: legacy.macroEvent ?? null,
     aiPlayers: normalizeAIPlayers(legacy.aiPlayers, legacy.world.seed),
+    familyLedger: normalizeFamilyLedger(legacy),
+    contracts: (legacy.contracts ?? []).map((contract) => ({
+      ...contract,
+      records: (contract.records ?? []).map((record) => ({ ...record })),
+    })),
   } as GameState;
   const role = ROLES.find((item) => item.id === upgraded.roleId) ?? ROLES[0];
   const career = CAREERS.find((item) => item.id === upgraded.currentCareerId) ?? CAREERS[0];
@@ -694,7 +740,7 @@ export function createGame(config: NewGameConfig): GameState {
   for (const skill of role.starterSkills) skills[skill] = 1;
 
   const game: GameState = {
-    version: 5,
+    version: 6,
     phase: "playing",
     yearPhase: "opening",
     turnPhase: "world",
@@ -763,6 +809,8 @@ export function createGame(config: NewGameConfig): GameState {
       },
     ],
     aiPlayers: createAIPlayers(seed),
+    familyLedger: createFamilyLedger(),
+    contracts: [],
     rngStep: 200,
     savedAt: Date.now(),
   };
@@ -1224,6 +1272,9 @@ export function takeLifeAction(state: GameState, actionId: string): ActionResult
   next = sampleTalent(next, [...action.skillTags]);
   next = addKnowledge(next, [...action.knowledge]);
   next = addMemory(next, [...action.memory, `行动:${action.category}`]);
+  if (action.id === "family_budget" || action.id === "insurance") {
+    next.familyLedger = recordFamilyAction(next.familyLedger, action.id, next.turn, snapshot.success);
+  }
   const outcome = snapshot.success
     ? "行动达成了主要目标，相关状态与人生记忆已经更新。"
     : "行动没有得到预期结果，但成本、经验与后续影响仍然真实存在。";
@@ -1529,6 +1580,25 @@ export function scheduleAIInteraction(
   });
 }
 
+export function scheduleContractAction(
+  state: GameState,
+  contractId: string,
+  action: "fulfill" | "exit",
+): ActionResult {
+  const contract = state.contracts.find((item) => item.id === contractId);
+  if (!contract) return { state, success: false, message: "未找到这份合同。" };
+  if (contract.status !== "active") return { state, success: false, message: "这份合同当前不需要行动。" };
+  return schedulePlanItem(state, {
+    kind: "contract",
+    targetId: contract.id,
+    label: action === "fulfill" ? `履行合同 · ${contract.counterpartyName}` : `协商退出 · ${contract.counterpartyName}`,
+    category: "合同",
+    timeCost: action === "fulfill" ? contract.timeCost : 1,
+    cashCost: action === "fulfill" ? contract.contribution : contract.exitCost,
+    contractAction: action,
+  });
+}
+
 function resolveCorePlan(state: GameState): ActionResult {
   let next = applyEffects(state, { energy: -6, stress: 2 });
   next.actionPoints = Math.max(0, next.actionPoints - 4);
@@ -1576,12 +1646,7 @@ function resolveSocialPlan(state: GameState, item: PlannedAction): ActionResult 
     cash: -interaction.cashCost,
     energy: -interaction.timeCost * 2,
     relationship: snapshot.success ? 3 : -1,
-    monthlyIncome:
-      snapshot.success && (interaction.id === "request_help" || interaction.id === "joint_project")
-        ? interaction.id === "joint_project"
-          ? 650
-          : 250
-        : 0,
+    monthlyIncome: snapshot.success && interaction.id === "request_help" ? 250 : 0,
     credit: snapshot.success ? 1 : 0,
   });
   next.actionPoints -= interaction.timeCost;
@@ -1606,13 +1671,20 @@ function resolveSocialPlan(state: GameState, item: PlannedAction): ActionResult 
   target.currentMove = snapshot.success
     ? `与你继续推进「${interaction.label}」`
     : `重新评估与你的合作边界`;
+  if (interaction.id === "joint_project") {
+    const contract = createRelationshipContract(next.turn, target, snapshot.success);
+    next.contracts = [
+      ...next.contracts.filter((item) => item.id !== contract.id),
+      contract,
+    ];
+  }
   next = addKnowledge(next, ["关系复利", "合同", "信用"]);
   next = addMemory(next, [
     snapshot.success ? "建立可信互动" : "关系谈判受挫",
     `同桌:${target.id}`,
   ]);
   const outcome = snapshot.success
-    ? `${player.name}接受了你的提议。信任变化 ${trustDelta >= 0 ? "+" : ""}${trustDelta}，这段互动会影响未来介绍、借款与联合项目。`
+    ? `${player.name}接受了你的提议。信任变化 ${trustDelta >= 0 ? "+" : ""}${trustDelta}，${interaction.id === "joint_project" ? "联合项目已形成可履行、可违约、可退出的正式协议。" : "这段互动会影响未来介绍、借款与联合项目。"}`
     : `${player.name}拒绝了这次提议，并明确了底线：“${player.boundary}”`;
   next = finalizeActionCard(
     next,
@@ -1630,6 +1702,76 @@ function resolveSocialPlan(state: GameState, item: PlannedAction): ActionResult 
     cashDelta: -interaction.cashCost,
     tags: ["关系", "AI角色", interaction.id],
   });
+  return { state: next, success: true, message: outcome };
+}
+
+function resolveContractPlan(state: GameState, item: PlannedAction): ActionResult {
+  const contractIndex = state.contracts.findIndex((contract) => contract.id === item.targetId);
+  if (contractIndex < 0) return { state, success: false, message: "这份合同已经不在当前合同簿中。" };
+  const contract = state.contracts[contractIndex];
+  if (contract.status !== "active") return { state, success: false, message: "只有生效中的合同可以继续履行或退出。" };
+  if (item.contractAction === "exit") {
+    if (state.cash < contract.exitCost) return { state, success: false, message: "现金不足以承担协议退出成本。" };
+    let next = applyEffects(state, { cash: -contract.exitCost, energy: -1, relationship: -1 });
+    next.actionPoints = Math.max(0, next.actionPoints - 1);
+    const target = next.contracts[contractIndex];
+    target.status = "terminated";
+    target.records.push({ turn: next.turn, action: "terminated", detail: "按书面退出条款完成结算与交接。" });
+    next = addMemory(next, ["按约退出", `合同:${contract.id}:终止`]);
+    const outcome = `支付 ${formatMoney(contract.exitCost)} 退出成本并完成交接。合同终止，但没有形成违约。`;
+    next = finalizeActionCard(next, null, "合同管理 · 有序退出", contract.title, "退出机制让合作在目标变化后仍能保留信用。", ["合同", "退出机制", "信用"], outcome);
+    next = addHistory(next, { type: "action", title: `退出合同：${contract.title}`, description: outcome, cashDelta: -contract.exitCost, tags: ["合同", "退出"] });
+    return { state: next, success: true, message: outcome };
+  }
+  if (state.cash < contract.contribution) return { state, success: false, message: "现金不足以完成本期合同投入。" };
+  if (state.actionPoints < contract.timeCost) return { state, success: false, message: "本回合时间不足以完成合同交付。" };
+  const counterparty = state.aiPlayers.find((player) => player.id === contract.counterpartyId);
+  const [snapshot, rolled] = probabilitySnapshot(
+    state,
+    `履行合同：${contract.title}`,
+    0.56 + (counterparty?.trust ?? 50) / 600,
+    ["delivery", "negotiation", "communication"],
+    (state.energy / 100 + Math.min(1, state.cash / Math.max(1, contract.contribution * 3))) / 2,
+  );
+  const firstFulfillment = contract.lastFulfilledTurn === null;
+  let next = applyEffects(rolled, {
+    cash: -contract.contribution + (snapshot.success ? contract.payout : 0),
+    energy: -contract.timeCost * 2,
+    stress: snapshot.success ? 1 : 6,
+    credit: snapshot.success ? 2 : -4,
+    relationship: snapshot.success ? 2 : -4,
+    monthlyIncome: snapshot.success && firstFulfillment ? contract.incomeDelta : 0,
+  });
+  next.actionPoints -= contract.timeCost;
+  const targetContract = next.contracts[contractIndex];
+  const targetPlayer = next.aiPlayers.find((player) => player.id === contract.counterpartyId);
+  if (snapshot.success) {
+    targetContract.lastFulfilledTurn = next.turn;
+    targetContract.nextDueTurn = next.turn + 1;
+    targetContract.records.push({ turn: next.turn, action: "fulfilled", detail: "按里程碑完成投入、交付与结算。" });
+    if (targetContract.records.filter((record) => record.action === "fulfilled").length >= 3) {
+      targetContract.status = "completed";
+      targetContract.records.push({ turn: next.turn, action: "fulfilled", detail: "三个里程碑全部完成，协议正式结项。" });
+    }
+    if (targetPlayer) {
+      targetPlayer.trust = clamp(targetPlayer.trust + 5, 0, 100);
+      targetPlayer.relationship = clamp(targetPlayer.relationship + 5, 0, 100);
+    }
+  } else {
+    targetContract.status = "breached";
+    targetContract.records.push({ turn: next.turn, action: "breached", detail: "交付未达到协议里程碑，合同进入违约状态。" });
+    if (targetPlayer) {
+      targetPlayer.trust = clamp(targetPlayer.trust - 10, 0, 100);
+      targetPlayer.relationship = clamp(targetPlayer.relationship - 8, 0, 100);
+    }
+  }
+  next = addKnowledge(next, ["合同", "信用", "退出机制"]);
+  next = addMemory(next, [snapshot.success ? "按约履行" : "合同违约", `合同:${contract.id}:${snapshot.success ? "履行" : "违约"}`]);
+  const outcome = snapshot.success
+    ? `完成本期义务并回收 ${formatMoney(contract.payout)}，${targetContract.status === "completed" ? "三个里程碑全部结项。" : `下一次履约期为第 ${targetContract.nextDueTurn} 期。`}`
+    : "交付没有达到里程碑，合同进入违约状态，信用与对方信任同步受损。";
+  next = finalizeActionCard(next, snapshot, "合同履行 · 已裁决", contract.title, `${contract.playerDuty}；${contract.counterpartyDuty}。`, ["合同", snapshot.success ? "履约" : "违约", contract.counterpartyName], outcome);
+  next = addHistory(next, { type: "action", title: `履行合同：${contract.title}`, description: outcome, cashDelta: -contract.contribution + (snapshot.success ? contract.payout : 0), tags: ["合同", snapshot.success ? "履约" : "违约"] });
   return { state: next, success: true, message: outcome };
 }
 
@@ -1659,6 +1801,7 @@ function resolveDeepPlan(state: GameState, item: PlannedAction): ActionResult {
       deep.insurance.disabilityCoverage += 100_000;
       deep.insurance.annualPremium += 1_800;
       outcome = "医疗、寿险与失能覆盖同步提高；保障不会创造收益，但能阻断灾难性现金流。";
+      next.familyLedger = recordFamilyAction(next.familyLedger, "insurance", next.turn, true);
       break;
     }
     case "raise_pension": {
@@ -1705,6 +1848,7 @@ function resolveDeepPlan(state: GameState, item: PlannedAction): ActionResult {
         deep.family.sharedCash += 6_000;
         outcome = "家庭重新校准了共同目标，信任与共同现金缓冲得到加强。";
       }
+      next.familyLedger = recordFamilyAction(next.familyLedger, "build_family", next.turn, true);
       break;
     }
     case "care_parents": {
@@ -1712,6 +1856,7 @@ function resolveDeepPlan(state: GameState, item: PlannedAction): ActionResult {
       deep.family.familyTrust = clamp(deep.family.familyTrust + 6, 0, 100);
       next.stress = clamp(next.stress - 3, 0, 100);
       outcome = "医疗资料、紧急联系人和照护预算被写成可执行方案，长期家庭风险下降。";
+      next.familyLedger = recordFamilyAction(next.familyLedger, "care_parents", next.turn, true);
       break;
     }
     case "start_business": {
@@ -1909,6 +2054,7 @@ function executePlannedAction(state: GameState, item: PlannedAction): ActionResu
   if (item.kind === "life") return takeLifeAction(state, item.targetId);
   if (item.kind === "opportunity" && item.payload) return resolveOpportunity(state, item.payload);
   if (item.kind === "social") return resolveSocialPlan(state, item);
+  if (item.kind === "contract") return resolveContractPlan(state, item);
   if (item.kind === "deep") return resolveDeepPlan(state, item);
   return { state, success: false, message: "这项计划缺少可执行的规则映射。" };
 }
@@ -2380,28 +2526,76 @@ function settleDeepSystems(
   ];
 }
 
-function simulateAIMoves(state: GameState): GameState {
-  const moves = [
-    "补充了现金储备",
-    "尝试了一条新职业路线",
-    "研究一项长期资产",
-    "拒绝了一次高收益诱惑",
-    "与合作伙伴重谈分工",
-    "投入时间学习新技能",
-    "为家庭配置了保障",
-    "缩减了一个低效项目",
-  ];
+function settleFamilyResponsibilities(state: GameState): [GameState, number] {
+  if (state.deep) return [state, 0];
   const next = copyState(state);
-  next.aiPlayers = next.aiPlayers.map((player, index) => {
-    const roll = seededRandom(next.world.seed, next.turn * 19 + index);
-    const cashChange = Math.round((roll - 0.35) * 18_000 * (0.6 + player.risk));
-    return {
-      ...player,
-      cash: Math.max(5_000, player.cash + cashChange),
-      relationship: clamp(player.relationship + (roll > 0.65 ? 2 : -1), 0, 100),
-      currentMove: moves[Math.floor(roll * moves.length)],
-    };
-  });
+  const expense = Math.round(
+    next.familyLedger.responsibilities
+      .filter((responsibility) => responsibility.status === "active")
+      .reduce((sum, responsibility) => sum + responsibility.cashPerPeriod, 0),
+  );
+  if (expense <= 0) return [next, 0];
+
+  const fullyCovered = next.cash >= expense;
+  next.cash -= expense;
+  if (!fullyCovered) {
+    next.familyLedger.trust = clamp(next.familyLedger.trust - 5, 0, 100);
+    next.stress = clamp(next.stress + 5, 0, 100);
+    next.familyLedger.decisions = [
+      ...next.familyLedger.decisions,
+      {
+        id: `family-settlement-${next.turn}`,
+        turn: next.turn,
+        title: "家庭责任结算",
+        choice: "现金不足，部分责任转为负债",
+        outcome: "本期持续责任仍然到期，现金缺口进入负债并损害家庭信任。",
+        trustDelta: -5,
+      },
+    ].slice(-24);
+  }
+  return [next, expense];
+}
+
+function settleOverdueContracts(state: GameState, completedPeriod: number): GameState {
+  const next = copyState(state);
+  for (const contract of next.contracts) {
+    if (contract.status !== "active" || contract.nextDueTurn > completedPeriod) continue;
+    contract.status = "breached";
+    contract.records.push({
+      turn: completedPeriod,
+      action: "breached",
+      detail: "到期前没有安排履约或退出，合同自动进入违约状态。",
+    });
+    if (contract.lastFulfilledTurn !== null) {
+      next.monthlyIncome = Math.max(0, next.monthlyIncome - contract.incomeDelta);
+    }
+    next.credit = clamp(next.credit - 6, 0, 100);
+    next.relationship = clamp(next.relationship - 5, 0, 100);
+    const counterparty = next.aiPlayers.find((player) => player.id === contract.counterpartyId);
+    if (counterparty) {
+      counterparty.trust = clamp(counterparty.trust - 12, 0, 100);
+      counterparty.relationship = clamp(counterparty.relationship - 10, 0, 100);
+      counterparty.memories.push(`第${completedPeriod}期：你未按时履行${contract.title}`);
+    }
+    next.history.push({
+      id: `history-${completedPeriod}-contract-${contract.id}`,
+      turn: completedPeriod,
+      type: "system",
+      title: `合同逾期：${contract.title}`,
+      description: "到期义务没有被放入本期计划，系统按书面边界记录违约、信用损失与关系后果。",
+      tags: ["合同", "违约", "延迟后果"],
+      timestamp: Date.now(),
+    });
+  }
+  return next;
+}
+
+function simulateAIMoves(state: GameState): GameState {
+  const next = copyState(state);
+  const monthsInPeriod = next.timeScale === "quarter" ? 3 : 12;
+  next.aiPlayers = next.aiPlayers.map((player) =>
+    decideAIPlayerTurn(player, next.world, next.turn, monthsInPeriod),
+  );
   return next;
 }
 
@@ -2433,6 +2627,8 @@ export function advanceTurn(state: GameState): ActionResult {
   if (next.deep) {
     [next, deepSettlement] = settleDeepSystems(next, activeCash);
   }
+  let familyResponsibilityExpense = 0;
+  [next, familyResponsibilityExpense] = settleFamilyResponsibilities(next);
   next.debt = Math.max(0, next.debt + (next.cash < 0 ? Math.abs(next.cash) * 1.08 : 0));
   if (next.cash < 0) next.cash = 0;
   const [assetSettled, assetChange] = settleAssets(next);
@@ -2441,14 +2637,15 @@ export function advanceTurn(state: GameState): ActionResult {
   next.energy = clamp(next.energy + (12 - next.stress * 0.08) / periodsPerYear, 0, 100);
   next.stress = clamp(next.stress + (-7 + (next.actionPoints <= 1 ? 4 : 0)) / periodsPerYear, 0, 100);
   next.happiness = clamp(next.happiness + (activeNet > 0 ? 1 : -3), 0, 100);
+  next = settleOverdueContracts(next, completedPeriod);
   next = simulateAIMoves(next);
   next = addHistory(next, {
     type: "settlement",
     title: `${getPeriodLabel(next)}结算`,
     description: next.deep
       ? `个人现金流 ${formatSignedMoney(activeNet)}，税费 ${formatMoney(deepSettlement.tax)}，养老金入账 ${formatMoney(deepSettlement.pension)}，保障/住房/家庭支出 ${formatMoney(deepSettlement.insurance + deepSettlement.housing + deepSettlement.family)}，企业经营 ${formatSignedMoney(deepSettlement.business)}，资产变化 ${formatSignedMoney(assetChange)}${deepSettlement.reconciliation ? `，年末汇算 ${formatSignedMoney(deepSettlement.reconciliation)}` : ""}。`
-      : `主动现金流 ${formatSignedMoney(activeNet)}，资产与分配现金流 ${formatSignedMoney(assetChange)}，利息成本 ${formatMoney(debtInterest)}。`,
-    cashDelta: activeNet + assetChange,
+      : `主动现金流 ${formatSignedMoney(activeNet)}，资产与分配现金流 ${formatSignedMoney(assetChange)}，家庭持续责任 ${formatMoney(familyResponsibilityExpense)}，利息成本 ${formatMoney(debtInterest)}。`,
+    cashDelta: activeNet + assetChange - familyResponsibilityExpense,
     tags: [next.timeScale === "quarter" ? "季度结算" : "年度结算", next.world.cycle],
   });
 
@@ -2596,6 +2793,15 @@ export function resolvePendingEvent(state: GameState, choiceId: string): ActionR
   }
   next = addKnowledge(next, choice.knowledgeTags);
   next = addMemory(next, [...choice.memoryTags, `事件:${pending.event.type}`]);
+  if (pending.event.type === "家庭") {
+    next.familyLedger = recordFamilyEvent(
+      next.familyLedger,
+      next.turn,
+      pending.event.title,
+      choice.label,
+      snapshot.success,
+    );
+  }
   const outcome = snapshot.success
     ? `${choice.label}的主要目标实现了。系统同时保留成本与后续影响。`
     : `${choice.label}没有按预期发展，失败来自准备、环境与随机扰动的共同作用。`;

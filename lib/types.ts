@@ -270,6 +270,81 @@ export interface AIPlayer {
   relationship: number;
   currentMove: string;
   memories: string[];
+  strategy: string;
+  energy: number;
+  stress: number;
+  lastDecision: AIPlayerDecision | null;
+  decisionHistory: AIPlayerDecision[];
+}
+
+export interface AIPlayerDecision {
+  turn: number;
+  actionId: string;
+  title: string;
+  reason: string;
+  cashDelta: number;
+  incomeDelta: number;
+  debtDelta: number;
+  risk: RiskLevel;
+}
+
+export type FamilyStage = "independent" | "partnered" | "caregiving" | "parenting" | "multigenerational";
+
+export interface FamilyResponsibility {
+  id: string;
+  type: "shared_living" | "housing" | "protection" | "childcare" | "eldercare" | "education";
+  title: string;
+  owner: "player" | "shared";
+  cashPerPeriod: number;
+  timePerPeriod: number;
+  priority: "必要" | "重要" | "可调整";
+  status: "active" | "paused" | "complete";
+  startedTurn: number;
+}
+
+export interface FamilyDecisionRecord {
+  id: string;
+  turn: number;
+  title: string;
+  choice: string;
+  outcome: string;
+  trustDelta: number;
+}
+
+export interface FamilyLedgerState {
+  stage: FamilyStage;
+  sharedCash: number;
+  trust: number;
+  responsibilities: FamilyResponsibility[];
+  decisions: FamilyDecisionRecord[];
+}
+
+export type RelationshipContractStatus = "proposed" | "active" | "rejected" | "completed" | "breached" | "terminated";
+
+export interface RelationshipContractRecord {
+  turn: number;
+  action: "proposed" | "accepted" | "rejected" | "fulfilled" | "breached" | "terminated";
+  detail: string;
+}
+
+export interface RelationshipContract {
+  id: string;
+  title: string;
+  counterpartyId: string;
+  counterpartyName: string;
+  type: "joint_project" | "service" | "loan";
+  status: RelationshipContractStatus;
+  playerDuty: string;
+  counterpartyDuty: string;
+  contribution: number;
+  timeCost: number;
+  payout: number;
+  incomeDelta: number;
+  exitCost: number;
+  createdTurn: number;
+  nextDueTurn: number;
+  lastFulfilledTurn: number | null;
+  records: RelationshipContractRecord[];
 }
 
 export interface WorldState {
@@ -354,6 +429,7 @@ export type PlannedActionKind =
   | "life"
   | "opportunity"
   | "social"
+  | "contract"
   | "deep";
 
 export type DeepActionId =
@@ -432,6 +508,7 @@ export interface PlannedAction {
   payload?: OpportunityCard;
   targetPlayerId?: string;
   saleFraction?: number;
+  contractAction?: "fulfill" | "exit";
 }
 
 export interface AnnualBriefing {
@@ -504,7 +581,7 @@ export interface QuestState {
 }
 
 export interface GameState {
-  version: 5;
+  version: 6;
   phase: "playing" | "review";
   yearPhase: YearPhase;
   turnPhase: TurnPhase;
@@ -564,6 +641,8 @@ export interface GameState {
   audits: ProbabilitySnapshot[];
   history: HistoryEntry[];
   aiPlayers: AIPlayer[];
+  familyLedger: FamilyLedgerState;
+  contracts: RelationshipContract[];
   rngStep: number;
   savedAt: number;
 }

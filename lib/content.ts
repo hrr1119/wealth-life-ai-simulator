@@ -488,6 +488,11 @@ export function createAIPlayers(seed: number): AIPlayer[] {
       relationship: 46 + ((seed + index * 17) % 28),
       currentMove: item[5] as string,
       memories: ["第一次同桌"],
+      strategy: item[3] as string,
+      energy: 68 + ((seed + index * 13) % 20),
+      stress: 24 + ((seed + index * 11) % 22),
+      lastDecision: null,
+      decisionHistory: [],
     };
   });
 }

@@ -64,7 +64,7 @@ function laneForTags(tags: string[], fallback: RouteLaneId = "life"): RouteLaneI
 function laneForAction(item: PlannedAction): RouteLaneId {
   if (item.kind === "skill" || item.kind === "career" || item.kind === "core") return "career";
   if (item.kind === "asset" || item.kind === "asset_sale") return "capital";
-  if (item.kind === "social") return "life";
+  if (item.kind === "social" || item.kind === "contract") return "life";
   if (item.kind === "opportunity") {
     return item.payload?.category === "investment" || item.payload?.category === "income"
       ? "capital"
@@ -79,7 +79,7 @@ function categoryForAction(item: PlannedAction): RouteNodeCategory {
   if (item.kind === "skill") return "skill";
   if (item.kind === "career" || item.kind === "core") return "career";
   if (item.kind === "asset" || item.kind === "asset_sale") return "investment";
-  if (item.kind === "social") return "relationship";
+  if (item.kind === "social" || item.kind === "contract") return "relationship";
   if (item.kind === "opportunity") return "opportunity";
   if (/家庭/.test(item.category)) return "family";
   if (/健康|休息|保障|照护/.test(item.category)) return "wellbeing";

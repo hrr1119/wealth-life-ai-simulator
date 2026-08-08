@@ -24,12 +24,14 @@ import {
   resolvePersonalEventPhase,
   scheduleAIInteraction,
   scheduleAssetSale,
+  scheduleContractAction,
   scheduleDeepAction,
   scheduleLifeAction,
   scheduleSkill,
   settleTurnPhase,
   seededRandom,
   skipYearReveals,
+  takeLifeAction,
   upgradeGameState,
 } from "../lib/engine.ts";
 import {
@@ -39,6 +41,11 @@ import {
   getPortfolioDiagnostics,
   getUnmetSkillPrerequisites,
 } from "../lib/progression.ts";
+import {
+  createRelationshipContract,
+  decideAIPlayerTurn,
+  getFamilyPressure,
+} from "../lib/relationships.ts";
 import { generateOpportunityCards } from "../lib/opportunity.ts";
 import { generateOpportunityCardsWithAI } from "../lib/ai.ts";
 import {
@@ -165,6 +172,94 @@ test("portfolio diagnostics expose concentration and asset sales keep liquidity 
   assert.ok(committed.state.assets[0].value < 100_000);
 });
 
+test("family actions build a persistent responsibility ledger in every game mode", () => {
+  const state = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 667788 });
+  assert.equal(state.familyLedger.stage, "independent");
+  const result = takeLifeAction(state, "family_budget");
+  assert.equal(result.success, true);
+  assert.equal(result.state.familyLedger.stage, "partnered");
+  assert.ok(result.state.familyLedger.responsibilities.some((item) => item.id === "shared-living"));
+  assert.ok(result.state.familyLedger.decisions.some((item) => item.choice === "召开家庭财务会"));
+  const pressure = getFamilyPressure(result.state.familyLedger);
+  assert.ok(pressure.cashPerPeriod > 0);
+  assert.ok(pressure.timePerPeriod > 0);
+});
+
+test("family responsibilities create recurring settlement costs outside deep mode", () => {
+  const initial = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 667789 });
+  const withFamily = takeLifeAction(initial, "family_budget").state;
+  const withoutFamily = structuredClone(withFamily);
+  withoutFamily.familyLedger.responsibilities = [];
+  for (const state of [withFamily, withoutFamily]) {
+    state.yearPhase = "consequence";
+    state.turnPhase = "learning";
+  }
+  const charged = advanceTurn(withFamily).state;
+  const baseline = advanceTurn(withoutFamily).state;
+  assert.equal(baseline.cash - charged.cash, 12_000);
+  assert.match(charged.history.findLast((entry) => entry.type === "settlement").description, /家庭持续责任/);
+});
+
+test("AI tablemates make deterministic goal-aware decisions with explicit reasons", () => {
+  const game = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 778899 });
+  const familyPlayer = {
+    ...game.aiPlayers[0],
+    archetype: "家庭守护者",
+    goal: "提高家庭抗风险能力",
+    cash: 80_000,
+    debt: 0,
+  };
+  const opportunityPlayer = {
+    ...game.aiPlayers[1],
+    archetype: "机会猎手",
+    goal: "抓住周期性的高回报机会",
+    cash: 80_000,
+    debt: 0,
+    risk: 0.9,
+  };
+  const familyDecision = decideAIPlayerTurn(familyPlayer, game.world, 1, 12);
+  const repeated = decideAIPlayerTurn(familyPlayer, game.world, 1, 12);
+  const opportunityDecision = decideAIPlayerTurn(opportunityPlayer, game.world, 1, 12);
+  assert.deepEqual(familyDecision.lastDecision, repeated.lastDecision);
+  assert.equal(familyDecision.lastDecision.actionId, "family_protection");
+  assert.equal(opportunityDecision.lastDecision.actionId, "side_business");
+  assert.match(familyDecision.lastDecision.reason, /家庭|风险/);
+  assert.ok(familyDecision.decisionHistory.length > familyPlayer.decisionHistory.length);
+});
+
+test("contracts enter the shared plan, record fulfillment and breach when ignored", () => {
+  let state = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 889900 });
+  state.cash = 200_000;
+  state.energy = 100;
+  state.relationship = 100;
+  state.skills.communication = 5;
+  state.skills.negotiation = 5;
+  state.skills.delivery = 5;
+  state.aiPlayers[0].trust = 100;
+  const contract = createRelationshipContract(0, state.aiPlayers[0], true);
+  contract.nextDueTurn = 1;
+  state.contracts.push(contract);
+  state = beginYearPlanning(state).state;
+  const scheduled = scheduleContractAction(state, contract.id, "fulfill");
+  assert.equal(scheduled.success, true);
+  assert.equal(scheduled.state.plan.at(-1).kind, "contract");
+  const committed = commitYearPlan(scheduled.state);
+  assert.equal(committed.success, true);
+  assert.ok(committed.state.contracts[0].records.some((record) => record.action === "fulfilled"));
+  assert.ok(committed.state.history.some((entry) => entry.title.startsWith("履行合同")));
+
+  let ignored = createGame({ mode: "quick", theme: "paper", roleId: "steady", seed: 990011 });
+  const ignoredContract = createRelationshipContract(0, ignored.aiPlayers[0], true);
+  ignoredContract.nextDueTurn = 1;
+  ignored.contracts.push(ignoredContract);
+  ignored.yearPhase = "consequence";
+  ignored.turnPhase = "learning";
+  const advanced = advanceTurn(ignored);
+  assert.equal(advanced.success, true);
+  assert.equal(advanced.state.contracts[0].status, "breached");
+  assert.ok(advanced.state.history.some((entry) => entry.title.startsWith("合同逾期")));
+});
+
 test("multiplayer plans enforce simultaneous room boundaries", () => {
   assert.ok(MULTIPLAYER_ACTIONS.length >= 8);
   assert.ok(MULTIPLAYER_WORLD_EVENTS.length >= 5);
@@ -208,13 +303,22 @@ test("a new game reproduces its world from the same seed", () => {
   assert.equal(a.opportunityTokens, 1);
 });
 
-test("version four saves migrate into the route graph and event director", () => {
+test("older saves migrate into route, director, family, AI agency and contract state", () => {
   const legacy = structuredClone(
     createGame({ mode: "quick", theme: "paper", roleId: "teacher", seed: 884212 }),
   );
   legacy.version = 4;
   delete legacy.routeGraph;
   delete legacy.eventDirector;
+  delete legacy.familyLedger;
+  delete legacy.contracts;
+  for (const player of legacy.aiPlayers) {
+    delete player.strategy;
+    delete player.energy;
+    delete player.stress;
+    delete player.lastDecision;
+    delete player.decisionHistory;
+  }
   legacy.history.push({
     id: "legacy-action",
     turn: 1,
@@ -225,9 +329,12 @@ test("version four saves migrate into the route graph and event director", () =>
     timestamp: 1,
   });
   const migrated = upgradeGameState(legacy);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, 6);
   assert.ok(migrated.routeGraph.nodes.some((node) => node.label === "legacy career evidence"));
   assert.deepEqual(migrated.eventDirector.recentEventIds, []);
+  assert.equal(migrated.familyLedger.stage, "independent");
+  assert.deepEqual(migrated.contracts, []);
+  assert.ok(migrated.aiPlayers.every((player) => player.strategy && Array.isArray(player.decisionHistory)));
 });
 
 test("AI opportunity parsing generates choices but never direct effects", () => {
