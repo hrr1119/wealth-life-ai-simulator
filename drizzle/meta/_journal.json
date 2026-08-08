@@ -15,6 +15,13 @@
       "when": 1785324723223,
       "tag": "0001_fresh_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786191869101,
+      "tag": "0002_demonic_toro",
+      "breakpoints": true
     }
   ]
 }

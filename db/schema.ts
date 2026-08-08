@@ -58,3 +58,43 @@ export const multiplayerTrades = sqliteTable(
   },
   (table) => [index("multiplayer_trades_room_idx").on(table.roomCode)],
 );
+
+export const multiplayerPlayerDomains = sqliteTable(
+  "multiplayer_player_domains",
+  {
+    playerId: text("player_id").primaryKey(),
+    roomCode: text("room_code").notNull(),
+    stateJson: text("state_json").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("multiplayer_player_domains_room_idx").on(table.roomCode)],
+);
+
+export const multiplayerContracts = sqliteTable(
+  "multiplayer_contracts",
+  {
+    id: text("id").primaryKey(),
+    roomCode: text("room_code").notNull(),
+    title: text("title").notNull(),
+    fromPlayerId: text("from_player_id").notNull(),
+    toPlayerId: text("to_player_id").notNull(),
+    fromPlayerName: text("from_player_name").notNull(),
+    toPlayerName: text("to_player_name").notNull(),
+    terms: text("terms").notNull(),
+    status: text("status").notNull().default("active"),
+    contribution: real("contribution").notNull().default(1000),
+    timeCost: integer("time_cost").notNull().default(2),
+    payout: real("payout").notNull().default(3000),
+    incomeDelta: real("income_delta").notNull().default(120),
+    exitCost: real("exit_cost").notNull().default(1000),
+    nextDueTurn: integer("next_due_turn").notNull(),
+    milestone: integer("milestone").notNull().default(0),
+    recordsJson: text("records_json").notNull().default("[]"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("multiplayer_contracts_room_idx").on(table.roomCode),
+    index("multiplayer_contracts_room_status_idx").on(table.roomCode, table.status),
+  ],
+);

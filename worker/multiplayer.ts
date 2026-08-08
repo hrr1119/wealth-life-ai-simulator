@@ -1,10 +1,21 @@
 import {
-  MULTIPLAYER_ACTIONS,
-  MULTIPLAYER_WORLD_EVENTS,
+  parseMultiplayerSubmittedPlan,
   validateMultiplayerPlanSelection,
+  type MultiplayerContract,
+  type MultiplayerDomainState,
   type MultiplayerPlanItem,
-  type MultiplayerReveal,
+  type MultiplayerWorldEvent,
 } from "../lib/multiplayer.ts";
+import {
+  buildMultiplayerActionCatalog,
+  createMultiplayerDomainState,
+  findMultiplayerEventChoice,
+  getMultiplayerStartingFinance,
+  multiplayerDeterministicRoll,
+  selectMultiplayerWorldEvent,
+  settleMultiplayerTurn,
+  toMultiplayerPublicDomain,
+} from "../lib/multiplayer-domain.ts";
 
 interface D1Result {
   success: boolean;
@@ -71,6 +82,35 @@ interface TradeRow {
   updated_at: number;
 }
 
+interface DomainRow {
+  player_id: string;
+  room_code: string;
+  state_json: string;
+  updated_at: number;
+}
+
+interface ContractRow {
+  id: string;
+  room_code: string;
+  title: string;
+  from_player_id: string;
+  to_player_id: string;
+  from_player_name: string;
+  to_player_name: string;
+  terms: string;
+  status: "active" | "completed" | "breached" | "terminated";
+  contribution: number;
+  time_cost: number;
+  payout: number;
+  income_delta: number;
+  exit_cost: number;
+  next_due_turn: number;
+  milestone: number;
+  records_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
 const MAX_ROOM_PLAYERS = 4;
 const MIN_ROOM_PLAYERS = 2;
 const HUMAN_STALE_MS = 75_000;
@@ -132,38 +172,6 @@ function parseJson<T>(value: string, fallback: T): T {
   }
 }
 
-function fnv1a(value: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-function deterministicRoll(value: string): number {
-  return fnv1a(value) / 4_294_967_296;
-}
-
-function worldEvent(seed: number, turn: number) {
-  return MULTIPLAYER_WORLD_EVENTS[
-    Math.floor(deterministicRoll(`${seed}:world:${turn}`) * MULTIPLAYER_WORLD_EVENTS.length)
-  ];
-}
-
-function actionRules(actionId: string) {
-  return {
-    career_sprint: { base: 0.68, successCash: 5_000, failureCash: 0, income: 650, trust: 1 },
-    learn_skill: { base: 0.82, successCash: 1_000, failureCash: 0, income: 280, trust: 1 },
-    side_business: { base: 0.54, successCash: 15_000, failureCash: -2_000, income: 520, trust: 0 },
-    market_invest: { base: 0.57, successCash: 12_000, failureCash: -5_000, income: 120, trust: 0 },
-    build_network: { base: 0.74, successCash: 2_000, failureCash: 0, income: 180, trust: 8 },
-    family_commitment: { base: 0.9, successCash: 0, failureCash: 0, income: 0, trust: 6 },
-    recover_energy: { base: 1, successCash: 0, failureCash: 0, income: 0, trust: 2 },
-    build_reserve: { base: 1, successCash: 0, failureCash: 0, income: 0, trust: 1 },
-  }[actionId];
-}
-
 async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaReady) return;
   await db.batch([
@@ -212,9 +220,39 @@ async function ensureSchema(db: D1Database): Promise<void> {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS multiplayer_player_domains (
+      player_id TEXT PRIMARY KEY NOT NULL,
+      room_code TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS multiplayer_contracts (
+      id TEXT PRIMARY KEY NOT NULL,
+      room_code TEXT NOT NULL,
+      title TEXT NOT NULL,
+      from_player_id TEXT NOT NULL,
+      to_player_id TEXT NOT NULL,
+      from_player_name TEXT NOT NULL,
+      to_player_name TEXT NOT NULL,
+      terms TEXT NOT NULL,
+      status TEXT DEFAULT 'active' NOT NULL,
+      contribution REAL DEFAULT 1000 NOT NULL,
+      time_cost INTEGER DEFAULT 2 NOT NULL,
+      payout REAL DEFAULT 3000 NOT NULL,
+      income_delta REAL DEFAULT 120 NOT NULL,
+      exit_cost REAL DEFAULT 1000 NOT NULL,
+      next_due_turn INTEGER NOT NULL,
+      milestone INTEGER DEFAULT 0 NOT NULL,
+      records_json TEXT DEFAULT '[]' NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`),
     db.prepare("CREATE INDEX IF NOT EXISTS multiplayer_players_room_idx ON multiplayer_players (room_code)"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS multiplayer_players_room_seat_unique ON multiplayer_players (room_code, seat)"),
     db.prepare("CREATE INDEX IF NOT EXISTS multiplayer_trades_room_idx ON multiplayer_trades (room_code)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS multiplayer_player_domains_room_idx ON multiplayer_player_domains (room_code)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS multiplayer_contracts_room_idx ON multiplayer_contracts (room_code)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS multiplayer_contracts_room_status_idx ON multiplayer_contracts (room_code, status)"),
   ]);
   schemaReady = true;
 }
@@ -237,6 +275,71 @@ async function getTrades(db: D1Database, code: string): Promise<TradeRow[]> {
     .bind(code)
     .all<TradeRow>();
   return result.results;
+}
+
+async function getDomainRows(db: D1Database, code: string): Promise<DomainRow[]> {
+  const result = await db
+    .prepare("SELECT * FROM multiplayer_player_domains WHERE room_code = ?")
+    .bind(code)
+    .all<DomainRow>();
+  return result.results;
+}
+
+async function ensurePlayerDomains(
+  db: D1Database,
+  room: RoomRow,
+  players: PlayerRow[],
+): Promise<Map<string, MultiplayerDomainState>> {
+  const existing = await getDomainRows(db, room.code);
+  const existingIds = new Set(existing.map((row) => row.player_id));
+  const now = Date.now();
+  const inserts = players
+    .filter((player) => !existingIds.has(player.id))
+    .map((player) =>
+      db
+        .prepare("INSERT OR IGNORE INTO multiplayer_player_domains (player_id, room_code, state_json, updated_at) VALUES (?, ?, ?, ?)")
+        .bind(player.id, room.code, JSON.stringify(createMultiplayerDomainState(room.seed, player.seat)), now),
+    );
+  if (inserts.length) await db.batch(inserts);
+  const rows = inserts.length ? await getDomainRows(db, room.code) : existing;
+  return new Map(rows.map((row) => [row.player_id, parseJson(row.state_json, createMultiplayerDomainState(room.seed, players.find((player) => player.id === row.player_id)?.seat ?? 1))]));
+}
+
+function rowToContract(row: ContractRow): MultiplayerContract {
+  return {
+    id: row.id,
+    title: row.title,
+    partyIds: [row.from_player_id, row.to_player_id],
+    partyNames: [row.from_player_name, row.to_player_name],
+    terms: row.terms,
+    status: row.status,
+    contribution: row.contribution,
+    timeCost: row.time_cost,
+    payout: row.payout,
+    incomeDelta: row.income_delta,
+    exitCost: row.exit_cost,
+    nextDueTurn: row.next_due_turn,
+    milestone: row.milestone,
+    records: parseJson(row.records_json, []),
+  };
+}
+
+async function getContracts(db: D1Database, code: string): Promise<MultiplayerContract[]> {
+  const result = await db
+    .prepare("SELECT * FROM multiplayer_contracts WHERE room_code = ? ORDER BY created_at DESC LIMIT 40")
+    .bind(code)
+    .all<ContractRow>();
+  return result.results.map(rowToContract);
+}
+
+async function sharedWorldEvent(
+  db: D1Database,
+  room: RoomRow,
+  turn: number,
+): Promise<MultiplayerWorldEvent> {
+  const players = await getPlayers(db, room.code);
+  const domains = await ensurePlayerDomains(db, room, players);
+  return selectMultiplayerWorldEvent(room.seed, turn, [...domains.values()]);
 }
 
 async function promoteHostIfNeeded(db: D1Database, room: RoomRow): Promise<void> {
@@ -281,67 +384,27 @@ async function authenticate(
   return player;
 }
 
-function aiPlan(player: PlayerRow, room: RoomRow): MultiplayerPlanItem[] {
-  const affordable = MULTIPLAYER_ACTIONS.filter((item) => item.cashCost <= player.cash * 0.22);
-  const first = affordable[Math.floor(deterministicRoll(`${room.seed}:${room.turn}:${player.id}:a`) * affordable.length)];
-  const candidates = affordable.filter(
-    (item) => item.id !== first.id && item.timeCost + first.timeCost <= 8,
+function aiPlan(
+  player: PlayerRow,
+  room: RoomRow,
+  domain: MultiplayerDomainState,
+  contracts: MultiplayerContract[],
+  event: MultiplayerWorldEvent,
+) {
+  const catalog = buildMultiplayerActionCatalog(domain, player.cash, player.id, contracts, room.turn);
+  const candidates = catalog.filter((item) => !item.locked && item.cashCost <= player.cash * 0.35);
+  const preferred = candidates.filter((item) => item.recommended);
+  const pool = preferred.length >= 2 ? preferred : candidates;
+  const first = pool[Math.floor(multiplayerDeterministicRoll(`${room.seed}:${room.turn}:${player.id}:a`) * pool.length)] ?? candidates[0];
+  const secondPool = candidates.filter(
+    (item) => item.id !== first?.id && (item.timeCost + (first?.timeCost ?? 0)) <= 8 && (item.cashCost + (first?.cashCost ?? 0)) <= player.cash,
   );
-  const second = candidates[
-    Math.floor(deterministicRoll(`${room.seed}:${room.turn}:${player.id}:b`) * candidates.length)
-  ];
-  return second ? [first, second] : [first];
-}
-
-function createReveals(room: RoomRow, players: PlayerRow[]): MultiplayerReveal[] {
-  const event = parseJson<{ modifier?: number }>(room.world_event, {});
-  return players.map((player) => {
-    const plan = parseJson<MultiplayerPlanItem[]>(player.plan_json, []);
-    const outcomes = plan.map((action) => {
-      const rules = actionRules(action.id) ?? {
-        base: 0.5,
-        successCash: 0,
-        failureCash: 0,
-        income: 0,
-        trust: 0,
-      };
-      const resourceModifier = player.cash >= action.cashCost * 4 ? 0.05 : -0.04;
-      const trustModifier =
-        action.category === "关系" || action.category === "家庭"
-          ? (player.trust - 50) / 500
-          : 0;
-      const probability = Math.max(
-        0.08,
-        Math.min(0.95, rules.base + (event.modifier ?? 0) + resourceModifier + trustModifier),
-      );
-      const roll = deterministicRoll(
-        `${room.code}:${room.seed}:${room.turn}:${player.id}:${action.id}`,
-      );
-      const success = roll <= probability;
-      const cashDelta =
-        -action.cashCost + (success ? rules.successCash : rules.failureCash);
-      const incomeDelta = success ? rules.income : 0;
-      const trustDelta = success ? rules.trust : action.category === "关系" ? -2 : 0;
-      return {
-        actionId: action.id,
-        label: action.label,
-        success,
-        probability,
-        cashDelta,
-        incomeDelta,
-        trustDelta,
-        narrative: success
-          ? `${action.label}形成了可继续使用的结果。`
-          : `${action.label}没有达到目标，但成本和样本会进入下一轮判断。`,
-      };
-    });
-    return {
-      playerId: player.id,
-      playerName: player.name,
-      outcomes,
-      totalCashDelta: outcomes.reduce((sum, outcome) => sum + outcome.cashDelta, 0),
-    };
-  });
+  const second = secondPool[Math.floor(multiplayerDeterministicRoll(`${room.seed}:${room.turn}:${player.id}:b`) * secondPool.length)];
+  const choice = event.choices[Math.floor(multiplayerDeterministicRoll(`${room.seed}:${room.turn}:${player.id}:event`) * event.choices.length)] ?? event.choices[0];
+  return {
+    actions: [first, second].filter((item): item is MultiplayerPlanItem => Boolean(item)),
+    eventChoiceId: choice?.id ?? "",
+  };
 }
 
 async function resolvePlanning(db: D1Database, room: RoomRow): Promise<void> {
@@ -370,6 +433,10 @@ async function tickRoom(db: D1Database, room: RoomRow): Promise<void> {
   if (room.phase !== "planning") return;
   const now = Date.now();
   const players = await getPlayers(db, room.code);
+  const domains = await ensurePlayerDomains(db, room, players);
+  const contracts = await getContracts(db, room.code);
+  const parsedEvent = parseJson<MultiplayerWorldEvent | null>(room.world_event, null);
+  const event = parsedEvent?.eventId ? parsedEvent : await sharedWorldEvent(db, room, room.turn);
   const statements: D1PreparedStatement[] = [];
   for (const player of players) {
     const stale = now - player.last_seen > HUMAN_STALE_MS;
@@ -380,7 +447,7 @@ async function tickRoom(db: D1Database, room: RoomRow): Promise<void> {
           .prepare(
             "UPDATE multiplayer_players SET control = 'ai', online = 0, submitted = 1, plan_json = ? WHERE id = ? AND submitted = 0",
           )
-          .bind(JSON.stringify(aiPlan(player, room)), player.id),
+          .bind(JSON.stringify(aiPlan(player, room, domains.get(player.id) ?? createMultiplayerDomainState(room.seed, player.seat), contracts, event)), player.id),
       );
     } else if (stale && player.control === "human") {
       statements.push(
@@ -414,51 +481,72 @@ async function tickNegotiation(db: D1Database, room: RoomRow): Promise<void> {
 }
 
 async function prepareAndApplySettlement(db: D1Database, room: RoomRow): Promise<void> {
-  const players = await getPlayers(db, room.code);
-  const reveals = createReveals(room, players);
-  await db
+  const claimAt = Date.now();
+  const claim = await db
     .prepare(
-      "UPDATE multiplayer_rooms SET reveals_json = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
+      "UPDATE multiplayer_rooms SET updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement' AND updated_at = ?",
     )
-    .bind(JSON.stringify(reveals), Date.now(), room.code)
+    .bind(claimAt, room.code, room.updated_at)
     .run();
-  const latest = await getRoom(db, room.code);
-  if (latest?.phase === "settlement") await applySettlement(db, latest);
-}
-
-async function applySettlement(db: D1Database, room: RoomRow): Promise<void> {
+  if ((claim.meta?.changes ?? 0) !== 1) return;
   const players = await getPlayers(db, room.code);
-  const reveals = parseJson<MultiplayerReveal[]>(room.reveals_json, []);
+  const domains = await ensurePlayerDomains(db, room, players);
+  const contracts = await getContracts(db, room.code);
+  const parsedEvent = parseJson<MultiplayerWorldEvent | null>(room.world_event, null);
+  const event = parsedEvent?.eventId ? parsedEvent : await sharedWorldEvent(db, room, room.turn);
+  const settlement = settleMultiplayerTurn(
+    players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      cash: player.cash,
+      monthlyIncome: player.monthly_income,
+      monthlyExpense: player.monthly_expense,
+      trust: player.trust,
+      domain: domains.get(player.id) ?? createMultiplayerDomainState(room.seed, player.seat),
+      plan: parseMultiplayerSubmittedPlan(parseJson(player.plan_json, [])),
+    })),
+    contracts,
+    event,
+    room.seed,
+    room.turn,
+  );
   const statements: D1PreparedStatement[] = [];
-  for (const player of players) {
-    const reveal = reveals.find((candidate) => candidate.playerId === player.id);
-    const cashDelta = reveal?.outcomes.reduce((sum, item) => sum + item.cashDelta, 0) ?? 0;
-    const incomeDelta = reveal?.outcomes.reduce((sum, item) => sum + item.incomeDelta, 0) ?? 0;
-    const trustDelta = reveal?.outcomes.reduce((sum, item) => sum + item.trustDelta, 0) ?? 0;
-    const settlementCash = player.monthly_income * 12 - player.monthly_expense * 12;
-    const nextCash = Math.max(0, player.cash + cashDelta + settlementCash);
+  const now = Date.now();
+  for (const player of settlement.players) {
     statements.push(
       db
         .prepare(
-          "UPDATE multiplayer_players SET cash = ?, monthly_income = ?, trust = ?, net_worth = ?, submitted = 0, plan_json = '[]' WHERE id = ?",
+          "UPDATE multiplayer_players SET cash = ?, monthly_income = ?, monthly_expense = ?, trust = ?, net_worth = ?, submitted = 0, plan_json = '[]' WHERE id = ?",
         )
         .bind(
-          nextCash,
-          Math.max(0, player.monthly_income + incomeDelta),
-          Math.max(0, Math.min(100, player.trust + trustDelta)),
-          nextCash,
+          player.cash,
+          player.monthlyIncome,
+          player.monthlyExpense,
+          player.trust,
+          player.netWorth,
           player.id,
         ),
+      db
+        .prepare("UPDATE multiplayer_player_domains SET state_json = ?, updated_at = ? WHERE player_id = ?")
+        .bind(JSON.stringify(player.domain), now, player.id),
+    );
+  }
+  for (const contract of settlement.contracts) {
+    statements.push(
+      db
+        .prepare("UPDATE multiplayer_contracts SET status = ?, next_due_turn = ?, milestone = ?, records_json = ?, updated_at = ? WHERE id = ?")
+        .bind(contract.status, contract.nextDueTurn, contract.milestone, JSON.stringify(contract.records), now, contract.id),
     );
   }
   statements.push(
     db
       .prepare(
-        "UPDATE multiplayer_rooms SET phase = 'learning', phase_deadline = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
+        "UPDATE multiplayer_rooms SET phase = 'learning', phase_deadline = ?, reveals_json = ?, updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'settlement'",
       )
       .bind(
         Date.now() + 180_000,
-        Date.now(),
+        JSON.stringify(settlement.reveals),
+        now,
         room.code,
       ),
   );
@@ -469,7 +557,7 @@ async function finishLearning(db: D1Database, room: RoomRow): Promise<void> {
   if (room.phase !== "learning") return;
   const completed = room.turn >= room.max_turns;
   const nextTurn = completed ? room.turn : room.turn + 1;
-  const event = worldEvent(room.seed, nextTurn);
+  const event = completed ? parseJson(room.world_event, {}) : await sharedWorldEvent(db, room, nextTurn);
   await db
     .prepare(
       "UPDATE multiplayer_rooms SET turn = ?, phase = ?, phase_deadline = ?, world_event = ?, reveals_json = '[]', updated_at = ?, version = version + 1 WHERE code = ? AND phase = 'learning'",
@@ -485,7 +573,7 @@ async function finishLearning(db: D1Database, room: RoomRow): Promise<void> {
     .run();
 }
 
-async function snapshot(db: D1Database, code: string): Promise<Response> {
+async function snapshot(db: D1Database, code: string, viewerId?: string): Promise<Response> {
   const room = await getRoom(db, code);
   if (!room) return json({ error: "房间不存在或已经关闭。" }, 404);
   await promoteHostIfNeeded(db, room);
@@ -494,14 +582,26 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
   } else if (room.phase === "negotiation") {
     await tickNegotiation(db, room);
   } else if (room.phase === "settlement" && Date.now() - room.updated_at > 4_000) {
-    if (parseJson<MultiplayerReveal[]>(room.reveals_json, []).length) await applySettlement(db, room);
-    else await prepareAndApplySettlement(db, room);
+    await prepareAndApplySettlement(db, room);
   } else if (room.phase === "learning" && room.phase_deadline > 0 && room.phase_deadline <= Date.now()) {
     await finishLearning(db, room);
   }
   const current = (await getRoom(db, code)) ?? room;
   const players = await getPlayers(db, code);
   const trades = await getTrades(db, code);
+  const domains = await ensurePlayerDomains(db, current, players);
+  const contracts = await getContracts(db, code);
+  const viewer = viewerId ? players.find((candidate) => candidate.id === viewerId) : undefined;
+  const viewerDomain = viewer ? domains.get(viewer.id) : undefined;
+  const worldEvent = parseJson<MultiplayerWorldEvent>(current.world_event, {
+    eventId: "",
+    type: "等待",
+    title: "等待世界生成",
+    description: "房主开始后将公开本回合的共同世界事件。",
+    modifier: 0,
+    tags: [],
+    choices: [],
+  });
   return json({
     code: current.code,
     mode: current.mode,
@@ -511,11 +611,7 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
     seed: current.seed,
     version: current.version,
     phaseDeadline: current.phase_deadline,
-    worldEvent: parseJson(current.world_event, {
-      title: "等待世界生成",
-      description: "房主开始后将先公开本回合的世界状态。",
-      modifier: 0,
-    }),
+    worldEvent,
     players: players.map((player) => ({
       id: player.id,
       seat: player.seat,
@@ -530,6 +626,9 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
       trust: player.trust,
       netWorth: player.net_worth,
       isHost: player.id === current.host_player_id,
+      domain: toMultiplayerPublicDomain(
+        domains.get(player.id) ?? createMultiplayerDomainState(current.seed, player.seat),
+      ),
     })),
     reveals:
       current.phase === "learning" || current.phase === "settlement" || current.phase === "complete"
@@ -544,6 +643,11 @@ async function snapshot(db: D1Database, code: string): Promise<Response> {
       status: trade.status,
       createdAt: trade.created_at,
     })),
+    contracts,
+    availableActions:
+      viewer && viewerDomain && current.phase === "planning"
+        ? buildMultiplayerActionCatalog(viewerDomain, viewer.cash, viewer.id, contracts, current.turn)
+        : [],
     serverNow: Date.now(),
   });
 }
@@ -565,17 +669,37 @@ async function createRoom(db: D1Database, body: Record<string, unknown>): Promis
   const playerId = crypto.randomUUID();
   const token = randomToken();
   const seed = Math.floor(Math.random() * 2_000_000_000);
+  const domain = createMultiplayerDomainState(seed, 1);
+  const finance = getMultiplayerStartingFinance(domain);
+  const netWorth = finance.cash - domain.debt;
   await db.batch([
     db
       .prepare(
         "INSERT INTO multiplayer_rooms (code, host_player_id, mode, turn, max_turns, phase, seed, version, phase_deadline, world_event, reveals_json, created_at, updated_at) VALUES (?, ?, ?, 1, ?, 'lobby', ?, 1, 0, '{}', '[]', ?, ?)",
       )
       .bind(code, playerId, mode, mode === "standard" ? 24 : 12, seed, now, now),
+      db
+        .prepare(
+        "INSERT INTO multiplayer_players (id, room_code, seat, name, token_hash, control, online, ready, submitted, plan_json, cash, monthly_income, monthly_expense, trust, net_worth, last_seen, joined_at) VALUES (?, ?, 1, ?, ?, 'human', 1, 1, 0, '[]', ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        playerId,
+        code,
+        name,
+        await hashToken(token),
+        finance.cash,
+        finance.monthlyIncome,
+        finance.monthlyExpense,
+        finance.trust,
+        netWorth,
+        now,
+        now,
+      ),
     db
       .prepare(
-        "INSERT INTO multiplayer_players (id, room_code, seat, name, token_hash, control, online, ready, submitted, plan_json, cash, monthly_income, monthly_expense, trust, net_worth, last_seen, joined_at) VALUES (?, ?, 1, ?, ?, 'human', 1, 1, 0, '[]', 60000, 10000, 6500, 55, 60000, ?, ?)",
+        "INSERT INTO multiplayer_player_domains (player_id, room_code, state_json, updated_at) VALUES (?, ?, ?, ?)",
       )
-      .bind(playerId, code, name, await hashToken(token), now, now),
+      .bind(playerId, code, JSON.stringify(domain), now),
   ]);
   return json({ session: { code, playerId, token, name } }, 201);
 }
@@ -592,16 +716,38 @@ async function joinRoom(db: D1Database, body: Record<string, unknown>): Promise<
   const now = Date.now();
   const playerId = crypto.randomUUID();
   const token = randomToken();
-  await db
-    .prepare(
-      "INSERT INTO multiplayer_players (id, room_code, seat, name, token_hash, control, online, ready, submitted, plan_json, cash, monthly_income, monthly_expense, trust, net_worth, last_seen, joined_at) VALUES (?, ?, ?, ?, ?, 'human', 1, 1, 0, '[]', 60000, 10000, 6500, 55, 60000, ?, ?)",
-    )
-    .bind(playerId, code, players.length + 1, name, await hashToken(token), now, now)
-    .run();
-  await db
-    .prepare("UPDATE multiplayer_rooms SET version = version + 1, updated_at = ? WHERE code = ?")
-    .bind(now, code)
-    .run();
+  const seat = players.length + 1;
+  const domain = createMultiplayerDomainState(room.seed, seat);
+  const finance = getMultiplayerStartingFinance(domain);
+  const netWorth = finance.cash - domain.debt;
+  await db.batch([
+    db
+      .prepare(
+        "INSERT INTO multiplayer_players (id, room_code, seat, name, token_hash, control, online, ready, submitted, plan_json, cash, monthly_income, monthly_expense, trust, net_worth, last_seen, joined_at) VALUES (?, ?, ?, ?, ?, 'human', 1, 1, 0, '[]', ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        playerId,
+        code,
+        seat,
+        name,
+        await hashToken(token),
+        finance.cash,
+        finance.monthlyIncome,
+        finance.monthlyExpense,
+        finance.trust,
+        netWorth,
+        now,
+        now,
+      ),
+    db
+      .prepare(
+        "INSERT INTO multiplayer_player_domains (player_id, room_code, state_json, updated_at) VALUES (?, ?, ?, ?)",
+      )
+      .bind(playerId, code, JSON.stringify(domain), now),
+    db
+      .prepare("UPDATE multiplayer_rooms SET version = version + 1, updated_at = ? WHERE code = ?")
+      .bind(now, code),
+  ]);
   return json({ session: { code, playerId, token, name } }, 201);
 }
 
@@ -624,14 +770,14 @@ async function handleAction(
     .bind(now, player.id)
     .run();
 
-  if (action === "heartbeat") return snapshot(db, code);
+  if (action === "heartbeat") return snapshot(db, code, player.id);
 
   if (action === "start") {
     if (room.host_player_id !== player.id) return json({ error: "只有房主可以开始。" }, 403);
     const players = await getPlayers(db, code);
     if (players.length < MIN_ROOM_PLAYERS) return json({ error: "至少需要 2 位玩家。" }, 409);
     if (room.phase !== "lobby") return json({ error: "这局已经开始。" }, 409);
-    const event = worldEvent(room.seed, 1);
+    const event = await sharedWorldEvent(db, room, 1);
     await db.batch([
       db
         .prepare(
@@ -644,22 +790,50 @@ async function handleAction(
         )
         .bind(code),
     ]);
-    return snapshot(db, code);
+    return snapshot(db, code, player.id);
   }
 
   if (action === "submit_plan") {
     if (room.phase !== "planning") return json({ error: "当前不是普通行动阶段。" }, 409);
-    const plan = validateMultiplayerPlanSelection(body.plan, player.cash);
-    if (!plan) return json({ error: "计划需包含 1–3 项行动，最多 8 点时间且不能超过可用现金。" }, 400);
+    const players = await getPlayers(db, code);
+    const domains = await ensurePlayerDomains(db, room, players);
+    const contracts = await getContracts(db, code);
+    const domain = domains.get(player.id) ?? createMultiplayerDomainState(room.seed, player.seat);
+    const availableActions = buildMultiplayerActionCatalog(
+      domain,
+      player.cash,
+      player.id,
+      contracts,
+      room.turn,
+    );
+    const plan = validateMultiplayerPlanSelection(body.plan, player.cash, availableActions);
+    if (!plan) {
+      return json({ error: "计划需包含 1–3 项已解锁行动，最多 8 点时间且不能超过可用现金。" }, 400);
+    }
+    const event = parseJson<MultiplayerWorldEvent | null>(room.world_event, null);
+    const eventChoiceId = String(body.eventChoiceId ?? "");
+    if (!event?.eventId || !findMultiplayerEventChoice(event, eventChoiceId)) {
+      return json({ error: "必须为本回合共同事件选择一个有效回应。" }, 400);
+    }
+    const contractActions = plan.filter((item) => item.kind === "contract");
+    const duplicateContract = contractActions.find((item, index) =>
+      contractActions.some(
+        (candidate, candidateIndex) =>
+          candidateIndex !== index && candidate.targetId === item.targetId,
+      ),
+    );
+    if (duplicateContract) {
+      return json({ error: "同一份合同不能同时安排履约和退出。" }, 400);
+    }
     const update = await db
       .prepare(
         "UPDATE multiplayer_players SET plan_json = ?, submitted = 1, last_seen = ? WHERE id = ? AND submitted = 0",
       )
-      .bind(JSON.stringify(plan), now, player.id)
+      .bind(JSON.stringify({ actions: plan, eventChoiceId }), now, player.id)
       .run();
     if ((update.meta?.changes ?? 0) !== 1) return json({ error: "本回合计划已经提交。" }, 409);
     await claimAndResolveIfReady(db, code);
-    return snapshot(db, code);
+    return snapshot(db, code, player.id);
   }
 
   if (action === "propose_trade") {
@@ -683,7 +857,7 @@ async function handleAction(
       )
       .bind(id, code, player.id, target.id, cash, terms, now, now)
       .run();
-    return snapshot(db, code);
+    return snapshot(db, code, player.id);
   }
 
   if (action === "respond_trade") {
@@ -712,16 +886,48 @@ async function handleAction(
       if ((claim.meta?.changes ?? 0) !== 1) {
         return json({ error: "这项交易刚刚已经被处理。" }, 409);
       }
+      const contractId = `contract-${trade.id}`;
+      const contribution = Math.max(
+        500,
+        Math.min(3_000, Math.round((trade.cash || 20_000) * 0.05)),
+      );
+      const payout = contribution + 2_000;
       await db.batch([
         db
-          .prepare("UPDATE multiplayer_players SET cash = cash - ?, trust = MIN(100, trust + 2) WHERE id = ?")
-          .bind(trade.cash, trade.from_player_id),
+          .prepare("UPDATE multiplayer_players SET cash = cash - ?, net_worth = net_worth - ?, trust = MIN(100, trust + 2) WHERE id = ?")
+          .bind(trade.cash, trade.cash, trade.from_player_id),
         db
-          .prepare("UPDATE multiplayer_players SET cash = cash + ?, trust = MIN(100, trust + 2) WHERE id = ?")
-          .bind(trade.cash, trade.to_player_id),
+          .prepare("UPDATE multiplayer_players SET cash = cash + ?, net_worth = net_worth + ?, trust = MIN(100, trust + 2) WHERE id = ?")
+          .bind(trade.cash, trade.cash, trade.to_player_id),
         db
           .prepare("UPDATE multiplayer_trades SET status = 'accepted', updated_at = ? WHERE id = ? AND status = 'processing'")
           .bind(now, trade.id),
+        db
+          .prepare(
+            "INSERT OR IGNORE INTO multiplayer_contracts (id, room_code, title, from_player_id, to_player_id, from_player_name, to_player_name, terms, status, contribution, time_cost, payout, income_delta, exit_cost, next_due_turn, milestone, records_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 2, ?, 120, 1000, ?, 0, ?, ?, ?)",
+          )
+          .bind(
+            contractId,
+            code,
+            `${from.name} × ${player.name} 合作协议`,
+            from.id,
+            player.id,
+            from.name,
+            player.name,
+            trade.terms,
+            contribution,
+            payout,
+            room.turn + 1,
+            JSON.stringify([
+              {
+                turn: room.turn,
+                action: "accepted",
+                detail: `双方接受条件并建立可执行合同；下一次履约在第 ${room.turn + 1} 回合。`,
+              },
+            ]),
+            now,
+            now,
+          ),
       ]);
     } else {
       await db
@@ -729,14 +935,14 @@ async function handleAction(
         .bind(now, trade.id)
         .run();
     }
-    return snapshot(db, code);
+    return snapshot(db, code, player.id);
   }
 
   if (action === "advance") {
     if (room.host_player_id !== player.id) return json({ error: "只有房主可以推进共同回合。" }, 403);
     if (room.phase === "learning") {
       await finishLearning(db, room);
-      return snapshot(db, code);
+      return snapshot(db, code, player.id);
     }
     if (room.phase !== "negotiation") return json({ error: "当前阶段不能推进共同回合。" }, 409);
     const claimed = await db
@@ -748,7 +954,7 @@ async function handleAction(
     if ((claimed.meta?.changes ?? 0) !== 1) return json({ error: "本回合正在结算。" }, 409);
     const settling = await getRoom(db, code);
     if (settling) await prepareAndApplySettlement(db, settling);
-    return snapshot(db, code);
+    return snapshot(db, code, player.id);
   }
 
   if (action === "leave") {
@@ -781,7 +987,7 @@ export async function handleMultiplayerRequest(
       )
       .bind(Date.now(), player.id)
       .run();
-    return snapshot(db, code);
+    return snapshot(db, code, player.id);
   }
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   let body: Record<string, unknown>;

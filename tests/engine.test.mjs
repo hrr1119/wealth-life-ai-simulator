@@ -49,10 +49,16 @@ import {
 import { generateOpportunityCards } from "../lib/opportunity.ts";
 import { generateOpportunityCardsWithAI } from "../lib/ai.ts";
 import {
-  MULTIPLAYER_ACTIONS,
-  MULTIPLAYER_WORLD_EVENTS,
   validateMultiplayerPlanSelection,
 } from "../lib/multiplayer.ts";
+import {
+  MULTIPLAYER_EVENT_CATALOG,
+  buildMultiplayerActionCatalog,
+  createMultiplayerDomainState,
+  getMultiplayerStartingFinance,
+  selectMultiplayerWorldEvent,
+  settleMultiplayerTurn,
+} from "../lib/multiplayer-domain.ts";
 
 test("content library keeps the MVP breadth", () => {
   assert.ok(CAREERS.length >= 24, "at least 24 careers");
@@ -260,38 +266,140 @@ test("contracts enter the shared plan, record fulfillment and breach when ignore
   assert.ok(advanced.state.history.some((entry) => entry.title.startsWith("合同逾期")));
 });
 
-test("multiplayer plans enforce simultaneous room boundaries", () => {
-  assert.ok(MULTIPLAYER_ACTIONS.length >= 8);
-  assert.ok(MULTIPLAYER_WORLD_EVENTS.length >= 5);
-  assert.equal(new Set(MULTIPLAYER_ACTIONS.map((action) => action.id)).size, MULTIPLAYER_ACTIONS.length);
+test("multiplayer reuses the complete career, skill, asset and event catalog", () => {
+  const domain = createMultiplayerDomainState(20260808, 1);
+  const finance = getMultiplayerStartingFinance(domain);
+  const catalog = buildMultiplayerActionCatalog(domain, finance.cash, "player-1", [], 1);
+
+  assert.equal(MULTIPLAYER_EVENT_CATALOG.length, 86);
+  assert.equal(catalog.filter((action) => action.kind === "career").length, CAREERS.length);
+  assert.equal(catalog.filter((action) => action.kind === "skill").length, SKILLS.length);
+  assert.equal(catalog.filter((action) => action.kind === "asset_buy").length, ASSETS.length);
+  assert.ok(catalog.some((action) => action.kind === "life" && action.targetId === "family_budget"));
+  assert.ok(catalog.some((action) => action.locked && action.lockReason));
+  assert.equal(new Set(catalog.map((action) => action.id)).size, catalog.length);
+
+  const work = catalog.find((action) => action.kind === "career_work");
+  const family = catalog.find((action) => action.kind === "life" && action.targetId === "family_budget");
+  assert.ok(work && family);
   const valid = validateMultiplayerPlanSelection(
-    [{ id: "career_sprint" }, { id: "build_network" }],
-    60_000,
+    [{ id: work.id }, { id: family.id }],
+    finance.cash,
+    catalog,
   );
-  assert.deepEqual(valid?.map((item) => item.id), ["career_sprint", "build_network"]);
+  assert.deepEqual(valid?.map((item) => item.id), [work.id, family.id]);
   assert.equal(
     validateMultiplayerPlanSelection(
       [
-        { id: "side_business" },
-        { id: "career_sprint" },
-        { id: "family_commitment" },
-        { id: "build_reserve" },
+        { id: work.id },
+        { id: family.id },
+        { id: catalog.find((action) => action.kind === "life" && action.targetId === "rest")?.id },
+        { id: catalog.find((action) => action.kind === "life" && action.targetId === "network")?.id },
       ],
-      60_000,
+      finance.cash,
+      catalog,
     ),
     null,
     "more than three simultaneous actions is rejected",
   );
+  const locked = catalog.find((action) => action.locked);
+  assert.ok(locked);
   assert.equal(
-    validateMultiplayerPlanSelection([{ id: "market_invest" }], 2_000),
+    validateMultiplayerPlanSelection([{ id: locked.id }], finance.cash, catalog),
     null,
-    "a plan cannot reserve more cash than the player owns",
+    "locked prerequisites or unaffordable actions are rejected",
   );
   assert.equal(
-    validateMultiplayerPlanSelection([{ id: "build_reserve" }, { id: "build_reserve" }], 60_000),
+    validateMultiplayerPlanSelection([{ id: work.id }, { id: work.id }], finance.cash, catalog),
     null,
     "duplicate actions are rejected",
   );
+});
+
+test("multiplayer settlement persists assets, family responsibility and event memory", () => {
+  const domain = createMultiplayerDomainState(20260809, 1);
+  const finance = getMultiplayerStartingFinance(domain);
+  const event = selectMultiplayerWorldEvent(20260809, 1, [domain]);
+  const catalog = buildMultiplayerActionCatalog(domain, finance.cash, "player-1", [], 1);
+  const family = catalog.find((action) => action.kind === "life" && action.targetId === "family_budget");
+  const asset = catalog.find((action) => action.kind === "asset_buy" && !action.locked);
+  assert.ok(family && asset && event.choices[0]);
+
+  const settlement = settleMultiplayerTurn(
+    [{
+      id: "player-1",
+      name: "甲",
+      ...finance,
+      domain,
+      plan: { actions: [family, asset], eventChoiceId: event.choices[0].id },
+    }],
+    [],
+    event,
+    20260809,
+    1,
+  );
+  const result = settlement.players[0];
+  assert.equal(result.domain.assets.length, 1);
+  assert.ok(result.domain.familyLedger.responsibilities.some((item) => item.id === "shared-living"));
+  assert.equal(result.domain.eventHistory.length, 1);
+  assert.equal(settlement.reveals[0].familyCost, 12_000);
+  assert.ok(settlement.reveals[0].outcomes.some((outcome) => outcome.kind === "settlement"));
+});
+
+test("multiplayer contracts require both parties to fulfill and record breach when one ignores", () => {
+  const domainA = createMultiplayerDomainState(20260810, 1);
+  const domainB = createMultiplayerDomainState(20260810, 2);
+  const financeA = getMultiplayerStartingFinance(domainA);
+  const financeB = getMultiplayerStartingFinance(domainB);
+  const event = selectMultiplayerWorldEvent(20260810, 1, [domainA, domainB]);
+  const contract = {
+    id: "contract-test",
+    title: "联合项目测试协议",
+    partyIds: ["a", "b"],
+    partyNames: ["甲", "乙"],
+    terms: "双方每期共同投入并完成一次交付。",
+    status: "active",
+    contribution: 500,
+    timeCost: 2,
+    payout: 1_500,
+    incomeDelta: 100,
+    exitCost: 300,
+    nextDueTurn: 1,
+    milestone: 0,
+    records: [{ turn: 0, action: "accepted", detail: "合同生效。" }],
+  };
+  const actionA = buildMultiplayerActionCatalog(domainA, financeA.cash, "a", [contract], 1)
+    .find((action) => action.contractAction === "fulfill");
+  const actionB = buildMultiplayerActionCatalog(domainB, financeB.cash, "b", [contract], 1)
+    .find((action) => action.contractAction === "fulfill");
+  assert.ok(actionA && actionB && event.choices[0]);
+
+  const fulfilled = settleMultiplayerTurn(
+    [
+      { id: "a", name: "甲", ...financeA, domain: domainA, plan: { actions: [actionA], eventChoiceId: event.choices[0].id } },
+      { id: "b", name: "乙", ...financeB, domain: domainB, plan: { actions: [actionB], eventChoiceId: event.choices[0].id } },
+    ],
+    [contract],
+    event,
+    20260810,
+    1,
+  );
+  assert.equal(fulfilled.contracts[0].status, "active");
+  assert.equal(fulfilled.contracts[0].milestone, 1);
+  assert.ok(fulfilled.contracts[0].records.some((record) => record.action === "fulfilled"));
+
+  const breached = settleMultiplayerTurn(
+    [
+      { id: "a", name: "甲", ...financeA, domain: domainA, plan: { actions: [actionA], eventChoiceId: event.choices[0].id } },
+      { id: "b", name: "乙", ...financeB, domain: domainB, plan: { actions: [], eventChoiceId: event.choices[0].id } },
+    ],
+    [contract],
+    event,
+    20260810,
+    1,
+  );
+  assert.equal(breached.contracts[0].status, "breached");
+  assert.ok(breached.players[1].trust < financeB.trust);
 });
 
 test("a new game reproduces its world from the same seed", () => {
